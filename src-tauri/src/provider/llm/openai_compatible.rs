@@ -1,49 +1,62 @@
+use async_openai::config::OpenAIConfig;
+use async_openai::types::chat::{
+    ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
+    ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs,
+    CreateChatCompletionRequestArgs,
+};
+use async_openai::Client as OpenAiClient;
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures_util::StreamExt;
-use serde_json::{json, Value};
 
 use super::error::LlmError;
 use super::provider_trait::{LlmProvider, LlmStream};
 use super::stream::LlmStreamEvent;
 use super::types::{ChatMessage, ChatRequest, Role};
 
-fn join_url(base: &str, path: &str) -> String {
-    let b = base.trim_end_matches('/');
-    format!("{b}{path}")
-}
-
-fn role_str(r: Role) -> &'static str {
-    match r {
-        Role::System => "system",
-        Role::User => "user",
-        Role::Assistant => "assistant",
-    }
-}
-
 pub struct OpenAiCompatible {
-    client: reqwest::Client,
-    base_url: String,
-    api_key: String,
+    client: OpenAiClient<OpenAIConfig>,
 }
 
 impl OpenAiCompatible {
-    pub fn new(client: reqwest::Client, base_url: String, api_key: String) -> Self {
-        Self {
-            client,
-            base_url,
-            api_key,
-        }
+    pub fn new(base_url: String, api_key: String) -> Self {
+        let config = OpenAIConfig::new()
+            .with_api_base(base_url)
+            .with_api_key(api_key);
+        let client: OpenAiClient<OpenAIConfig> = OpenAiClient::with_config(config);
+        Self { client }
     }
 
-    fn messages_json(messages: &[ChatMessage]) -> Vec<Value> {
+    fn convert_messages(
+        messages: &[ChatMessage],
+    ) -> Result<Vec<ChatCompletionRequestMessage>, LlmError> {
         messages
             .iter()
             .map(|m| {
-                json!({
-                    "role": role_str(m.role),
-                    "content": m.content,
-                })
+                let msg = match m.role {
+                    Role::System => {
+                        ChatCompletionRequestSystemMessageArgs::default()
+                            .content(&*m.content)
+                            .build()
+                            .map(ChatCompletionRequestMessage::System)
+                            .map_err(|e| LlmError::Config(e.to_string()))?
+                    }
+                    Role::User => {
+                        ChatCompletionRequestUserMessageArgs::default()
+                            .content(&*m.content)
+                            .build()
+                            .map(ChatCompletionRequestMessage::User)
+                            .map_err(|e| LlmError::Config(e.to_string()))?
+                    }
+                    Role::Assistant => {
+                        ChatCompletionRequestAssistantMessageArgs::default()
+                            .content(&*m.content)
+                            .build()
+                            .map(ChatCompletionRequestMessage::Assistant)
+                            .map_err(|e| LlmError::Config(e.to_string()))?
+                    }
+                };
+                Ok(msg)
             })
             .collect()
     }
@@ -52,39 +65,30 @@ impl OpenAiCompatible {
 #[async_trait]
 impl LlmProvider for OpenAiCompatible {
     async fn send_message(&self, req: ChatRequest) -> Result<String, LlmError> {
-        let url = join_url(&self.base_url, "/v1/chat/completions");
-        let mut body = json!({
-            "model": req.model,
-            "messages": Self::messages_json(&req.messages),
-            "temperature": req.temperature,
-            "stream": false,
-        });
+        let messages = Self::convert_messages(&req.messages)?;
+
+        let mut args = CreateChatCompletionRequestArgs::default();
+        args.model(&req.model).messages(messages).temperature(req.temperature);
         if let Some(mt) = req.max_tokens {
-            body["max_tokens"] = json!(mt);
+            args.max_tokens(mt);
         }
+        let request = args
+            .build()
+            .map_err(|e| LlmError::Config(e.to_string()))?;
 
-        let res = self
+        let response = self
             .client
-            .post(url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&body)
-            .send()
-            .await?;
+            .chat()
+            .create(request)
+            .await
+            .map_err(convert_error)?;
 
-        let status = res.status();
-        let text = res.text().await?;
-        if !status.is_success() {
-            return Err(LlmError::HttpStatus {
-                status: status.as_u16(),
-                body: text,
-            });
-        }
+        let content = response
+            .choices
+            .first()
+            .and_then(|c| c.message.content.clone())
+            .unwrap_or_default();
 
-        let v: Value = serde_json::from_str(&text)?;
-        let content = v["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
         if content.is_empty() {
             return Err(LlmError::EmptyResponse);
         }
@@ -92,80 +96,33 @@ impl LlmProvider for OpenAiCompatible {
     }
 
     async fn stream_chat(&self, req: ChatRequest) -> Result<LlmStream, LlmError> {
-        let url = join_url(&self.base_url, "/v1/chat/completions");
-        let mut body = json!({
-            "model": req.model,
-            "messages": Self::messages_json(&req.messages),
-            "temperature": req.temperature,
-            "stream": true,
-        });
+        let messages = Self::convert_messages(&req.messages)?;
+
+        let mut args = CreateChatCompletionRequestArgs::default();
+        args.model(&req.model).messages(messages).temperature(req.temperature);
         if let Some(mt) = req.max_tokens {
-            body["max_tokens"] = json!(mt);
+            args.max_tokens(mt);
         }
+        let request = args
+            .build()
+            .map_err(|e| LlmError::Config(e.to_string()))?;
 
-        let res = self
+        let stream = self
             .client
-            .post(url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&body)
-            .send()
-            .await?;
-
-        let status = res.status();
-        if !status.is_success() {
-            let body = res.text().await.unwrap_or_default();
-            return Err(LlmError::HttpStatus {
-                status: status.as_u16(),
-                body,
-            });
-        }
-
-        let bytes_stream = res.bytes_stream();
+            .chat()
+            .create_stream(request)
+            .await
+            .map_err(convert_error)?;
 
         let s = try_stream! {
-            let mut buf = String::new();
-            futures_util::pin_mut!(bytes_stream);
-            while let Some(chunk) = bytes_stream.next().await {
-                let chunk = chunk.map_err(LlmError::Http)?;
-                buf.push_str(&String::from_utf8_lossy(&chunk));
-                loop {
-                    let idx = match buf.find('\n') {
-                        Some(i) => i,
-                        None => break,
-                    };
-                    let mut line = buf[..idx].to_string();
-                    if line.ends_with('\r') {
-                        line.pop();
-                    }
-                    buf.drain(..=idx);
-
-                    let line = line.trim();
-                    if line.is_empty() {
-                        continue;
-                    }
-                    if line == "data: [DONE]" || line == "data:[DONE]" {
-                        yield LlmStreamEvent::Done;
-                        return;
-                    }
-                    let rest = line
-                        .strip_prefix("data:")
-                        .map(str::trim)
-                        .unwrap_or("");
-                    if rest.is_empty() {
-                        continue;
-                    }
-                    if rest == "[DONE]" {
-                        yield LlmStreamEvent::Done;
-                        return;
-                    }
-                    let v: Value = match serde_json::from_str(rest) {
-                        Ok(v) => v,
-                        Err(_) => continue,
-                    };
-                    if let Some(content) = v["choices"][0]["delta"]["content"].as_str() {
+            futures_util::pin_mut!(stream);
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk.map_err(convert_error)?;
+                if let Some(choice) = chunk.choices.first() {
+                    if let Some(content) = &choice.delta.content {
                         if !content.is_empty() {
                             yield LlmStreamEvent::TextDelta {
-                                text: content.to_string(),
+                                text: content.clone(),
                             };
                         }
                     }
@@ -175,5 +132,21 @@ impl LlmProvider for OpenAiCompatible {
         };
 
         Ok(Box::pin(s))
+    }
+}
+
+fn convert_error(e: async_openai::error::OpenAIError) -> LlmError {
+    match e {
+        async_openai::error::OpenAIError::Reqwest(http_err) => {
+            LlmError::Config(format!("http error: {}", http_err))
+        }
+        async_openai::error::OpenAIError::ApiError(api_err) => LlmError::HttpStatus {
+            status: 0,
+            body: api_err.to_string(),
+        },
+        async_openai::error::OpenAIError::JSONDeserialize(json_err, _body) => {
+            LlmError::Json(json_err)
+        }
+        other => LlmError::Config(other.to_string()),
     }
 }

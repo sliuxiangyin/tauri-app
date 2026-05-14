@@ -260,4 +260,6 @@
     background-color: #1a1a1a;
     /* 如果内容有溢出，裁剪一下，确保圆角生效 */
     overflow: hidden;
+    /* 增加边框外圈阴影 */
+    box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
 }

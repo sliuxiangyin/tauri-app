@@ -24,7 +24,7 @@ impl TryFrom<ProviderConfigPayload> for Provider {
 
         Ok(match value {
             ProviderConfigPayload::OpenAiCompatible { base_url, api_key } => {
-                Self::OpenAiCompatible(OpenAiCompatible::new(client, base_url, api_key))
+                Self::OpenAiCompatible(OpenAiCompatible::new(base_url, api_key))
             }
             ProviderConfigPayload::Anthropic { api_key } => {
                 Self::Anthropic(AnthropicProvider::new(client, api_key))

@@ -23,8 +23,8 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .setup(|app: &mut tauri::App| {
             let app_handle = app.handle().clone();
-            let db_state = Arc::new(db::DbState::new(app_handle.clone()));
-            app.manage(db_state.clone());
+            let db_state = db::DbState::new(app_handle.clone());
+            app.manage(db_state);
             app.manage(provider::mcp::McpManager::new());
             app.manage(provider::wechat::WechatClient::new(wechat_url));
 

@@ -59,6 +59,7 @@ export async function streamLlmChat(options: {
   const { streamId, provider, req, onChunk, onStreamError } = options;
 
   const unlistenChunk = await listen<LlmChunkPayload>("llm:chunk", (event) => {
+    console.log("[llm:chunk]", event);
     if (event.payload.stream_id !== streamId) {
       return;
     }

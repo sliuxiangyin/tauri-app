@@ -46,4 +46,5 @@ axum = "0.8"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "timeout", "cors"] }
 tauri-plugin-notification = "2"
+async-openai = { version = "0.38.2", features = ["chat-completion"] }
 
