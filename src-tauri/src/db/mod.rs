@@ -9,15 +9,23 @@ use tauri::AppHandle;
 use tokio::sync::Mutex;
 
 pub struct DbState {
-    app: AppHandle,
+    app: Option<AppHandle>,
     conn: Mutex<Option<Arc<DatabaseConnection>>>,
 }
 
 impl DbState {
     pub fn new(app: AppHandle) -> Self {
         Self {
-            app,
+            app: Some(app),
             conn: Mutex::new(None),
+        }
+    }
+
+    /// 直接从已有连接构造（仅用于测试场景）
+    pub fn from_connection(db: DatabaseConnection) -> Self {
+        Self {
+            app: None,
+            conn: Mutex::new(Some(Arc::new(db))),
         }
     }
 
@@ -26,7 +34,11 @@ impl DbState {
         if let Some(c) = g.as_ref() {
             return Ok(Arc::clone(c));
         }
-        let db = Arc::new(connection::connect_sqlite(&self.app).await?);
+        let app = self
+            .app
+            .as_ref()
+            .ok_or_else(|| DbError::Other("DbState 未初始化 AppHandle".into()))?;
+        let db = Arc::new(connection::connect_sqlite(app).await?);
         *g = Some(Arc::clone(&db));
         Ok(db)
     }

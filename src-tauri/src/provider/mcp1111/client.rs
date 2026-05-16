@@ -1,8 +1,7 @@
 use super::error::McpError;
 use super::transport::Transport;
-use super::types::{CachedToolsList, McpServiceConfig, ToolCallRequest, ToolCallResult, ToolInfo};
+use super::types::{CachedToolsList, McpModelConfig, ToolCallResult, ToolInfo};
 use serde_json::json;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -13,12 +12,12 @@ pub struct McpClient {
 }
 
 impl McpClient {
-    pub fn new(config: McpServiceConfig) -> Result<Self, McpError> {
+    pub fn new(config: McpModelConfig) -> Result<Self, McpError> {
         let transport: Box<dyn Transport> = match config {
-            McpServiceConfig::Stdio { command, args, env } => {
+            McpModelConfig::Stdio { command, args, env } => {
                 Box::new(super::transport::StdioTransport::new(command, args, env))
             }
-            McpServiceConfig::Http { url } => Box::new(super::transport::HttpTransport::new(url)),
+            McpModelConfig::Http { url } => Box::new(super::transport::HttpTransport::new(url)),
         };
 
         Ok(Self {
@@ -74,14 +73,13 @@ impl McpClient {
                 }
             }
         }
-
         // 调用 MCP 服务的 list_tools
         let transport = self.transport.read().await;
         let response = transport.send_request("tools/list", json!({})).await?;
-
+        println!("MCP list_tools response: {:?}", response);
         // 解析响应
         let tools = self.parse_tools_response(&response)?;
-
+        println!("MCP tools response: {:?}", tools);
         // 缓存结果（TTL 5分钟）
         let cached = CachedToolsList::new(tools.clone(), 300);
         *self.tools_cache.write().await = Some(cached);
@@ -95,14 +93,16 @@ impl McpClient {
     ) -> Result<Vec<ToolInfo>, McpError> {
         let result = response
             .get("result")
-            .or_else(|| response.get("tools"))
             .ok_or_else(|| McpError::ProtocolError("Invalid tools response format".to_string()))?;
 
-        let tools_array = result
+        // 检查 result 是否包含 tools 字段
+        let tools = result
+            .get("tools")
+            .ok_or_else(|| McpError::ProtocolError("Tools not found in response".to_string()))?
             .as_array()
             .ok_or_else(|| McpError::ProtocolError("Tools should be an array".to_string()))?;
 
-        let tools = tools_array
+        let tools = tools
             .iter()
             .filter_map(|tool| {
                 let name = tool.get("name")?.as_str()?.to_string();
@@ -111,7 +111,6 @@ impl McpClient {
                     .and_then(|d| d.as_str())
                     .map(|s| s.to_string());
                 let input_schema = tool.get("inputSchema").cloned().unwrap_or(json!({}));
-
                 Some(ToolInfo {
                     name,
                     description,
@@ -135,7 +134,7 @@ impl McpClient {
             "arguments": arguments
         });
 
-        let response = transport.send_request("tools/call", params).await?;
+        let response: serde_json::Value = transport.send_request("tools/call", params).await?;
 
         // 解析响应
         let content = response

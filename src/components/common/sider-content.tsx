@@ -8,7 +8,7 @@ type ModelConfigShellProps = {
   className?: string;
 };
 
-export function ModelConfigShell({
+export function SiderContent({
   list,
   editor,
   className,

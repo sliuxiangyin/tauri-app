@@ -7,4 +7,4 @@ pub mod types;
 pub use client::McpClient;
 pub use error::McpError;
 pub use manager::McpManager;
-pub use types::{McpServiceConfig, McpServiceInfo, ToolCallRequest, ToolCallResult, ToolInfo};
+pub use types::{McpModelConfig, McpServiceInfo, McpStateResult, ToolCallRequest, ToolCallResult, ToolInfo};

@@ -98,7 +98,6 @@ impl Transport for StdioTransport {
             .read_line(&mut response_str)
             .await
             .map_err(|e| McpError::Io(e))?;
-
         let response: serde_json::Value =
             serde_json::from_str(&response_str).map_err(|e| McpError::Json(e))?;
 

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import type { ModelConfigProfile, ModelEntry, ProviderKind } from "@/components/model-config";
+import type { ModelConfigProfile, ModelEntry, ProviderKind } from "@/components/model-config-page";
 
 // ---------------------------------------------------------------------------
 // Backend DTOs (snake_case, matching Rust structs in model_config.rs)

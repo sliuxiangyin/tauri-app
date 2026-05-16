@@ -10,6 +10,8 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { Tabs ,TabsList, TabsTrigger } from "../ui/tabs";
+import { TopMenu } from "./top-menu";
 
 // 定义组件的 Props 类型
 interface BaseHeaderProps {
@@ -165,12 +167,12 @@ export const BaseHeader = ({
                 </div>
             )}
             </div>
-
+           
             {/* 标题区域 */}
             {titleCentered ? 
                ( <div className="flex items-center " data-tauri-drag-region>
                     {renderTitle()}
-                </div>):(<></>)
+                </div>):( <TopMenu />)
             }
 
             {/* 右侧区域 - 完全自定义 */}

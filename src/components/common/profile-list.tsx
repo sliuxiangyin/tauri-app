@@ -1,10 +1,10 @@
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
-import { ConfigProfileListItem } from "./config-profile-list-item";
+import { ProfileListItem } from "./config-profile-list-item";
 import type { ModelConfigProfile } from "./types";
 
-type ConfigProfileListProps = {
+type ProfileListProps = {
   profiles: ModelConfigProfile[];
   selectedId: string | null;
   onSelect: (id: string) => void;
@@ -12,13 +12,13 @@ type ConfigProfileListProps = {
   onDeleteProfile: (id: string) => void;
 };
 
-export function ConfigProfileList({
+export function ProfileList({
   profiles,
   selectedId,
   onSelect,
   onAdd,
   onDeleteProfile,
-}: ConfigProfileListProps) {
+}: ProfileListProps) {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-0">
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-3">
@@ -35,7 +35,7 @@ export function ConfigProfileList({
             </p>
           ) : (
             profiles.map((p) => (
-              <ConfigProfileListItem
+              <ProfileListItem
                 key={p.id}
                 profile={p}
                 selected={p.id === selectedId}

@@ -39,6 +39,70 @@ interface ToolCallResult {
 export type { ConnectRequest, ToolInfo, ToolCallResult };
 // ============= API 封装 =============
 
+// ============= DB 配置 CRUD API =============
+
+export interface McpServeConfig {
+  id: number;
+  name: string;
+  config: McpModelConfig;
+  state: boolean;
+  tools: ToolInfo[];
+  error: string | null;
+  updated_at: string;
+}
+
+export interface CreateMcpServeConfigPayload {
+  name: string;
+  config: McpModelConfig;
+}
+
+export interface UpdateMcpServeConfigPayload {
+  name?: string;
+  config?: McpModelConfig;
+}
+
+export class McpServeConfigApi {
+  /**
+   * 列出所有 MCP 服务配置
+   */
+  static async list(): Promise<McpServeConfig[]> {
+    const configs = await invoke<McpServeConfig[]>('list_mcp_serve_configs');
+    console.log(`✅ 获取 ${configs.length} 个 MCP 服务配置`);
+    return configs;
+  }
+
+  /**
+   * 创建新的 MCP 服务配置
+   */
+  static async create(payload: CreateMcpServeConfigPayload): Promise<McpServeConfig> {
+    const config = await invoke<McpServeConfig>('create_mcp_serve_config', { payload });
+    console.log(`✅ 创建 MCP 服务配置: ${config.name}`);
+    return config;
+  }
+
+  /**
+   * 更新已有配置
+   */
+  static async update(
+    id: number,
+    payload: UpdateMcpServeConfigPayload
+  ): Promise<McpServeConfig> {
+    const config = await invoke<McpServeConfig>('update_mcp_serve_config', { id, payload });
+    console.log(`✅ 更新 MCP 服务配置 ID=${id}`);
+    return config;
+  }
+
+  /**
+   * 删除配置
+   */
+  static async delete(id: number): Promise<void> {
+    await invoke<void>('delete_mcp_serve_config', { id });
+    console.log(`✅ 删除 MCP 服务配置 ID=${id}`);
+  }
+}
+
+// ============= 实时 MCP 服务操作 API（保持原有功能） =============
+
 export class McpService {
   /**
    * 连接 MCP 服务

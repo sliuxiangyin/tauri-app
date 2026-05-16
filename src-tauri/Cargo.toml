@@ -34,17 +34,26 @@ sea-orm = { version = "1.1.20", default-features = false, features = [
     "macros",
     "runtime-tokio-rustls",
     "sqlx-sqlite",
+    "with-chrono",
 ] }
 sea-orm-migration = { version = "1.1.20", default-features = false, features = [
     "runtime-tokio-rustls",
     "sqlx-sqlite",
 ] }
+chrono = "0.4"
 libsqlite3-sys = { version = "0.30", features = ["bundled"] }
-rmcp = "1.6.0"
+rmcp = { version = "1.6.0", features = [
+    "client",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+] }
+arc-swap = "1"
+tracing = "0.1"
 log = "0.4.29"
 axum = "0.8"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "timeout", "cors"] }
 tauri-plugin-notification = "2"
 async-openai = { version = "0.38.2", features = ["chat-completion"] }
+sled = "0.34.7"
 

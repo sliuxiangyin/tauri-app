@@ -10,4 +10,6 @@ pub enum DbError {
     Io(#[from] std::io::Error),
     #[error("failed to resolve app data directory: {0}")]
     TauriPath(String),
+    #[error("{0}")]
+    Other(String),
 }

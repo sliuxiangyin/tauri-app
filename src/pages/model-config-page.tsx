@@ -3,18 +3,18 @@ import * as React from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   ConfigEditorForm,
-  ConfigProfileList,
+  ProfileList,
   createDefaultProfile,
-  ModelConfigShell,
   type ModelConfigProfile,
-} from "@/components/model-config";
+} from "@/components/model-config-page";
 import {
   createConfig,
   deleteConfigById,
   fetchAllConfigs,
   updateConfig,
 } from "@/lib/model-config-api";
-import { SubpageHeaderWithControls } from "../components/header/subpage-header-with-controls";
+import { SiderContent } from "@/components/common/sider-content";
+import { ProfileListItem } from "@/components/model-config-page/config-profile-list-item";
 
 export default function ModelConfigPage() {
   const [profiles, setProfiles] = React.useState<ModelConfigProfile[]>([]);
@@ -60,9 +60,12 @@ export default function ModelConfigPage() {
   const addProfile = () => {
     const p = createDefaultProfile();
     setProfiles((prev) => [...prev, p]);
+    console.log("Added new profil2e:", p);
+
     newIdsRef.current = new Set(newIdsRef.current).add(p.id);
     setSelectedId(p.id);
     setError(null);
+    console.log("Added new profile:", p);
   };
 
   const updateProfile = (next: ModelConfigProfile) => {
@@ -137,8 +140,7 @@ export default function ModelConfigPage() {
   // ---- Render ----
   if (loading) {
     return (
-      <div className="flex h-full min-h-0 flex-col  bg-white">
-        <SubpageHeaderWithControls title="模型配置" />
+      <div className="flex h-full w-full flex-col  bg-white">
         <div className="flex flex-1 items-center justify-center">
           <p className="text-sm text-muted-foreground">加载中…</p>
         </div>
@@ -147,8 +149,7 @@ export default function ModelConfigPage() {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-white">
-      <SubpageHeaderWithControls title="模型配置" />
+    <div className="flex h-full w-full flex-col bg-white">
       {error ? (
         <div className="mx-4 mt-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
           {error}
@@ -161,23 +162,30 @@ export default function ModelConfigPage() {
           </button>
         </div>
       ) : null}
-      <ModelConfigShell
+      <SiderContent
         className="min-h-0 flex-1"
         list={
-          <ConfigProfileList
+          <ProfileList
             profiles={profiles}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
             onAdd={addProfile}
-            onDeleteProfile={(id) => {
-              if (id === selectedId) {
-                handleDelete();
-              } else {
-                // Deleting a non-selected profile via list context menu
-                setProfiles((prev) => prev.filter((p) => p.id !== id));
-                deleteConfigById(id).catch((e) => setError(String(e)));
-              }
-            }}
+            itmeNode={profiles.map((p) => (
+              <ProfileListItem
+                key={p.id}
+                profile={p}
+                selected={p.id === selectedId}
+                onSelect={(id) => setSelectedId(id)}
+                onDelete={(id) => {
+                  if (id === selectedId) {
+                    handleDelete();
+                  } else {
+                    // Deleting a non-selected profile via list context menu
+                    setProfiles((prev) => prev.filter((p) => p.id !== id));
+                    deleteConfigById(id).catch((e) => setError(String(e)));
+                  }
+                }}
+              />
+            ))}
+
           />
         }
         editor={

@@ -2,10 +2,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::provider::mcp1111::McpError;
+
 /// MCP 服务配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "transport")]
-pub enum McpServiceConfig {
+pub enum McpModelConfig {
     #[serde(rename = "stdio")]
     Stdio {
         command: String,
@@ -23,7 +25,7 @@ pub enum McpServiceConfig {
 pub struct McpServiceInfo {
     pub service_id: String,
     pub name: Option<String>,
-    pub config: McpServiceConfig,
+    pub config: McpModelConfig,
     pub connected: bool,
     pub last_connected_at: Option<u64>,
 }
@@ -90,4 +92,14 @@ pub struct ToolContent {
     pub data: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
+}
+/// mcp 服务状态结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpStateResult {
+    pub id: String,
+    pub name: String,
+    pub state: bool,
+    pub tools: Vec<ToolInfo>,
+    //失败原因
+    pub error: Option<String>,
 }

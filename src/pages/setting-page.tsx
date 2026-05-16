@@ -1,10 +1,9 @@
+
+
 function SettingPage() {
   return (
-    <div>
-      <h2>Setting</h2>
-      <p>这是设置页。</p>
-    </div>
+     <div>1222222222222</div>
   );
 }
-
+ 
 export default SettingPage;

@@ -11,6 +11,6 @@ export {
   listItemLabel,
   newId,
 } from "./types";
-export { ModelConfigShell } from "./model-config-shell";
-export { ConfigProfileList } from "./config-profile-list";
+ 
+export { ProfileList } from "./config-profile-list";
 export { ConfigEditorForm } from "./config-editor-form";

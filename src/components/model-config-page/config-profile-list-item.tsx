@@ -12,19 +12,19 @@ const providerLabel: Record<ProviderKind, string> = {
   ollama: "Ollama",
 };
 
-type ConfigProfileListItemProps = {
+type ProfileListItemProps = {
   profile: ModelConfigProfile;
   selected: boolean;
-  onSelect: () => void;
-  onDelete: () => void;
+  onSelect: (id:string) => void;
+  onDelete: (id:string) => void;
 };
 
-export function ConfigProfileListItem({
+export function ProfileListItem({
   profile,
   selected,
   onSelect,
   onDelete,
-}: ConfigProfileListItemProps) {
+}: ProfileListItemProps) {
   return (
     <div
       className={cn(
@@ -38,7 +38,7 @@ export function ConfigProfileListItem({
         className={cn(
           "h-auto min-w-0 flex-1 flex-col items-stretch gap-1 rounded-md px-2.5 py-2 text-left font-normal whitespace-normal",
         )}
-        onClick={onSelect}
+        onClick={() => onSelect(profile.id)}
       >
         <span className="truncate font-medium">{listItemLabel(profile)}</span>
         <div className="flex flex-wrap items-center gap-1.5">
@@ -55,7 +55,7 @@ export function ConfigProfileListItem({
         variant="ghost"
         size="icon-sm"
         className="shrink-0 self-center text-muted-foreground hover:text-destructive"
-        onClick={onDelete}
+        onClick={() => onDelete(profile.id)}
         aria-label="删除此配置"
       >
         <Trash2Icon />
