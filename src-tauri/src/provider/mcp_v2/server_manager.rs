@@ -141,7 +141,7 @@ impl ServerManager {
 
         // 立即加载工具清单
         let tools = conn.list_tools().await?;
-
+        println!("Loaded {} tools for server '{}'", tools.len(), id);
         // 更新全局状态
         {
             let mut connections = self.connections.write().await;
@@ -172,7 +172,8 @@ impl ServerManager {
         self.configs.write().await.remove(id);
 
         // 清除文件缓存
-        if let Err(e) = self.file_cache.remove(id) {
+        let cache_key = cache_key(id);
+        if let Err(e) = self.file_cache.remove(&cache_key) {
             println!("Failed to invalidate cache for server '{}': {}", id, e);
         }
 

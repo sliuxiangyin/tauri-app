@@ -43,14 +43,15 @@ impl TryFrom<msc::Model> for McpServerConfig {
 }
 
 
-pub async fn init_mcp_v2(db_state: &DbState) -> Result<Arc<ServerManager>, Box<dyn std::error::Error + Send + Sync>> {
-    // 1. 创建文件缓存
-    let tool_cache = Arc::new(Cache::open("./mcp-v2-cache")?);
-    // 2. 准备初始配置
+pub async fn init_mcp_v2(
+    db_state: &DbState,
+    cache: Arc<Cache>,
+) -> Result<Arc<ServerManager>, Box<dyn std::error::Error + Send + Sync>> {
+    // 1. 准备初始配置
     let configs = get_mcp_services(&db_state).await?;
 
-    // 3. 创建 ServerManager（启动时建立连接，从缓存恢复工具清单）
-    let manager = ServerManager::new(configs, tool_cache).await?;
+    // 2. 创建 ServerManager（复用全局缓存实例，避免重复打开数据库）
+    let manager = ServerManager::new(configs, cache).await?;
     Ok(Arc::new(manager))
 }
 

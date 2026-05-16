@@ -78,28 +78,29 @@ export default function McpPage() {
   const selected = configs.find((c) => c.id === selectedId) ?? null;
   const isNew = selected ? newIdsRef.current.has(selected.id) : false;
 
+  // ---- Fetch list ----
+  const fetchLists = React.useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const list = await McpServeConfigApi.list();
+      setConfigs(list);
+      newIdsRef.current = new Set();
+      if (list.length > 0) {
+        setSelectedId(list[0].id);
+        setEditorValue(buildDisplayValue(list[0]));
+      }
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   // ---- Init: load from backend ----
   React.useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const list = await McpServeConfigApi.list();
-        console.log(list);
-        if (cancelled) return;
-        setConfigs(list);
-        newIdsRef.current = new Set();
-        if (list.length > 0) {
-          setSelectedId(list[0].id);
-          setEditorValue(buildDisplayValue(list[0]));
-        }
-      } catch (e) {
-        if (!cancelled) setError(String(e));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []);
+    fetchLists();
+  }, [fetchLists]);
 
   // 切换选中时同步编辑器内容
   React.useEffect(() => {
@@ -107,7 +108,6 @@ export default function McpPage() {
       setEditorValue(buildDisplayValue(selected));
     }
   }, [selectedId]);
-
   // ---- Handlers ----
   const addConfig = () => {
     const tempId = genTempId();
@@ -185,6 +185,7 @@ export default function McpPage() {
       setError(String(e));
     } finally {
       setSaving(false);
+      fetchLists();
     }
   };
 

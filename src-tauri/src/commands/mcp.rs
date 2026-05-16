@@ -71,22 +71,23 @@ pub async fn list_mcp_serve_configs(
         .into_iter()
         .map(model_to_dto)
         .collect::<Result<Vec<_>, _>>()?;
-
     // MCP v2 可能尚未初始化完成，读取时检查
     let guard = mcp_state.read().await;
     if let Some(ref mcp_api) = *guard {
-        let servers = mcp_api.list_tools(None).await?;
-        // println!("servers11: {:?}", servers);
-        // 获取运行时状态并合并
-        // let states = mcp_api.().await;
-        // for dto in &mut dtos {
-        //     let service_id_str = dto.id.to_string();
-        //     if let Some(st) = states.iter().find(|s| s.id == service_id_str) {
-        //         dto.state = st.state;
-        //         dto.tools = st.tools.clone();
-        //         dto.error = st.error.clone();
-        //     }
-        // }
+        for dto in &mut dtos {
+            let id_str = dto.id.to_string();
+            // 获取连接状态
+            dto.state = mcp_api.is_connected(&id_str).await;
+            // 获取该服务器的工具列表
+            match mcp_api.list_tools(Some(&id_str)).await {
+                Ok(tools) => {
+                    dto.tools = tools;
+                }
+                Err(e) => {
+                    dto.error = Some(e.to_string());
+                }
+            }
+        }
     }
 
     Ok(dtos)

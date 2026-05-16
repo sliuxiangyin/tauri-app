@@ -9,7 +9,7 @@ function DashboardPage() {
                 <div className="flex flex-1 min-h-0 bg-[#f5f5f5] overflow-hidden">
                      <Routes>
                                     <Route path="/" element={<Navigate to="/Dashboard" replace />} />
-                                    <Route path="/Dashboard" element={<DashboardPage />} />
+                                    <Route path="/Dashboard/*" element={<DashboardPage />} />
                                     <Route path="/mcp-page" element={<McpPage />} />
                                     <Route path="/model-config" element={<ModelConfigPage />} />
                         </Routes>

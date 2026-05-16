@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import type { McpServeConfig } from "@/lib/mcp-serve-api";
+import { ItemLink } from "./mcp-profile-item";
 
 type McpProfileListProps = {
   configs: McpServeConfig[];
@@ -36,27 +37,8 @@ export function McpProfileList({
             </p>
           ) : (
             configs.map((cfg) => (
-              <div
-                key={cfg.id}
-                className={cn(
-                  "flex w-full items-stretch gap-0.5 rounded-lg p-0.5",
-                  selectedId === cfg.id && "bg-muted",
-                )}
-              >
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className={cn(
-                    "h-auto min-w-0 flex-1 flex-col items-stretch gap-1 rounded-md px-2.5 py-2 text-left font-normal whitespace-normal",
-                  )}
-                  onClick={() => onSelect(cfg.id)}
-                >
-                  <span className="truncate font-medium">{cfg.name}</span>
-                  <span className="text-xs text-muted-foreground">
-                    {cfg.config.transport === "http" ? "HTTP" : "STDIO"}
-                  </span>
-                </Button>
-              </div>
+              
+              <ItemLink key={cfg.id} cfg={cfg} onSelect={onSelect}  />
             ))
           )}
         </div>

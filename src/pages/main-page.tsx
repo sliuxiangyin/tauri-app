@@ -18,16 +18,18 @@ function MainPage() {
                 <MainHeaderWithControls />
                 <div className="flex flex-1 min-h-0 bg-[#f5f5f5] overflow-hidden">
 
-                    {/* 两个页面始终渲染，通过 display 控制显示/隐藏 */}
+                    {/* home 始终挂载保持状态；settings 条件渲染，进入时才加载 */}
                     <div style={{ display: currentTab === "home" ? "flex" : "none", height: "100%", width: "100%" }}>
                         <AppSidebar />
                         <div className="flex h-full w-full flex-col overflow-hidden rounded-[12px]">
                             <ChatLayout />
                         </div>
                     </div>
-                    <div style={{ display: currentTab === "settings" ? "flex" : "none", height: "100%", width: "100%" }}>
-                        <DashboardPage />
-                    </div>
+                    {currentTab === "settings" && (
+                        <div className="flex h-full w-full">
+                            <DashboardPage />
+                        </div>
+                    )}
 
                 </div>
             </div>

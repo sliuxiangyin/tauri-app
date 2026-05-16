@@ -43,7 +43,7 @@ pub fn run() {
                 Cache::open("./app-cache")
                     .expect("Failed to initialize cache"),
             );
-            app.manage(cache);
+            app.manage(cache.clone());
 
             // 注册 MCP v2 状态占位（异步初始化完成后填充）
             let mcp_v2_state: McpV2State = Arc::new(tokio::sync::RwLock::new(None));
@@ -51,9 +51,10 @@ pub fn run() {
 
             // 批量初始化所有已保存的 MCP 服务（在异步任务中执行，不阻塞启动）
             let app_handle_for_mcp = app_handle.clone();
+            let cache_for_mcp = cache.clone();
             tauri::async_runtime::spawn(async move {
                 let db_state = app_handle_for_mcp.state::<db::DbState>();
-                match services::mcp_service::init_mcp_v2(db_state.inner()).await {
+                match services::mcp_service::init_mcp_v2(db_state.inner(), cache_for_mcp).await {
                     Ok(manager) => {
                         let api = McpV2Api::new(manager);
                         let mut guard = mcp_v2_state.write().await;
