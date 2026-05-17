@@ -7,8 +7,8 @@ import { listen, UnlistenFn } from "@tauri-apps/api/event";
 // ============ 类型定义 ============
 
 export interface QrGeneratedData {
-  qr_data_url: string;
-  session_key: string;
+  qrDataUrl: string;
+  sessionKey: string;
   message: string;
 }
 
@@ -105,37 +105,51 @@ export interface WebhookMessage {
 
 /**
  * 启动微信登录流
- * @param accountId - 账号 ID
+ * @param accountId - 账号 ID（可选，不传则使用临时会话）
  * @param onEvent - 登录事件回调
  * @param onError - 错误回调
  * @returns 取消监听函数
  */
 export async function startLoginStream(
-  accountId: string,
-  onEvent: (event: WechatLoginEvent) => void,
+  accountId?: string,
+  onEvent?: (event: WechatLoginEvent) => void,
   onError?: (error: LoginError) => void
 ): Promise<UnlistenFn> {
+  // 保存回调引用，用于事件处理
+  let eventCallback = onEvent;
+  let errorCallback = onError;
+
   // 监听登录事件
   const unlistenEvent = await listen<WechatLoginEvent>('wechat:login_event', (event) => {
-    onEvent(event.payload);
+    if (eventCallback) {
+      eventCallback(event.payload);
+    }
   });
 
   // 监听登录错误
-  const unlistenError = onError
-    ? await listen<LoginError>('wechat:login_error', (event) => {
-        onError(event.payload);
-      })
-    : undefined;
+  const unlistenError = await listen<LoginError>('wechat:login_error', (event) => {
+    if (errorCallback) {
+      errorCallback(event.payload);
+    }
+  });
 
   // 调用后端命令启动登录流
-  await invoke('wechat_login_stream', { accountId });
+  await invoke('wechat_login_stream', { accountId: accountId });
 
   // 返回取消监听函数
   return async () => {
-    await unlistenEvent();
-    if (unlistenError) {
-      await unlistenError();
+    console.log('[startLoginStream] cleanup called, invoking cancel');
+    // 先调用取消命令断开微信服务端连接
+    try {
+      await invoke('wechat_login_cancel');
+    } catch (e) {
+      console.warn('wechat_login_cancel failed:', e);
     }
+    // 再取消前端事件监听
+    console.log('[startLoginStream] unlistening events');
+    await unlistenEvent();
+    console.log('[startLoginStream] unlisten completed');
+    await unlistenError();
   };
 }
 

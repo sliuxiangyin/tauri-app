@@ -1,11 +1,13 @@
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use async_stream::try_stream;
 use futures_util::{Stream, StreamExt};
 use reqwest::Client;
 
 use super::error::WechatError;
-use super::types::{SseEvent, SseMessage};
+use super::types::SseEvent;
 
 pub type SseStream = Pin<Box<dyn Stream<Item = Result<SseEvent, WechatError>> + Send>>;
 
@@ -14,12 +16,25 @@ pub struct SseClient {
     base_url: String,
 }
 
+impl Clone for SseClient {
+    fn clone(&self) -> Self {
+        Self {
+            client: self.client.clone(),
+            base_url: self.base_url.clone(),
+        }
+    }
+}
+
 impl SseClient {
     pub fn new(client: Client, base_url: String) -> Self {
         Self { client, base_url }
     }
 
-    pub async fn login_stream(&self, account_id: &str) -> Result<SseStream, WechatError> {
+    pub async fn login_stream(
+        &self,
+        account_id: &str,
+        abort_flag: Arc<AtomicBool>,
+    ) -> Result<SseStream, WechatError> {
         let url = format!(
             "{}/login/stream?accountId={}",
             self.base_url.trim_end_matches('/'),
@@ -48,12 +63,26 @@ impl SseClient {
             let mut current_event = String::new();
             let mut current_data = String::new();
             futures_util::pin_mut!(bytes_stream);
+            let mut check_counter = 0u32;
 
             while let Some(chunk) = bytes_stream.next().await {
+                // 检查取消标记（每次循环都检查）
+                if abort_flag.load(Ordering::SeqCst) {
+                    println!("[SSE] Abort detected at outer loop");
+                    break;
+                }
+
                 let chunk = chunk?;
                 buf.push_str(&String::from_utf8_lossy(&chunk));
 
                 loop {
+                    // SSE 解析循环中每处理 4 行检查一次 abort
+                    check_counter += 1;
+                    if check_counter % 4 == 0 && abort_flag.load(Ordering::SeqCst) {
+                        println!("[SSE] Abort detected in inner loop");
+                        break;
+                    }
+
                     let idx = match buf.find('\n') {
                         Some(i) => i,
                         None => break,
@@ -90,7 +119,15 @@ impl SseClient {
                             .to_string();
                     }
                 }
+
+                // 如果在内层循环中检测到 abort，退出外层循环
+                if abort_flag.load(Ordering::SeqCst) {
+                    println!("[SSE] Abort detected after inner loop");
+                    break;
+                }
             }
+
+            println!("[SSE] Stream ended naturally");
         };
 
         Ok(Box::pin(stream))

@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod llm;
-pub mod scheduler;
-pub mod wechat;
 pub mod mcp_v2;
+pub mod scheduler;
+pub mod server;
+pub mod wechat;

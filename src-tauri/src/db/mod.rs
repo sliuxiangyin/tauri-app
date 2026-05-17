@@ -8,16 +8,23 @@ use sea_orm::DatabaseConnection;
 use tauri::AppHandle;
 use tokio::sync::Mutex;
 
+/// 数据库状态管理器
+///
+/// 职责：
+/// - 管理 SQLite 数据库连接的懒加载
+/// - 提供线程安全的连接访问
+/// - 实现 Clone 以支持在异步任务中传递
+#[derive(Clone)]
 pub struct DbState {
     app: Option<AppHandle>,
-    conn: Mutex<Option<Arc<DatabaseConnection>>>,
+    conn: Arc<Mutex<Option<Arc<DatabaseConnection>>>>,
 }
 
 impl DbState {
     pub fn new(app: AppHandle) -> Self {
         Self {
             app: Some(app),
-            conn: Mutex::new(None),
+            conn: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -25,7 +32,7 @@ impl DbState {
     pub fn from_connection(db: DatabaseConnection) -> Self {
         Self {
             app: None,
-            conn: Mutex::new(Some(Arc::new(db))),
+            conn: Arc::new(Mutex::new(Some(Arc::new(db)))),
         }
     }
 
@@ -41,5 +48,10 @@ impl DbState {
         let db = Arc::new(connection::connect_sqlite(app).await?);
         *g = Some(Arc::clone(&db));
         Ok(db)
+    }
+
+    /// 获取内部引用（用于传递给需要 &DbState 的函数）
+    pub fn inner(&self) -> &DbState {
+        self
     }
 }

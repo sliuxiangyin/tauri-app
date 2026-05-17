@@ -41,7 +41,6 @@ export function ConfigEditorForm({
   saving,
   onChange,
   onSave,
-  onDelete,
 }: ConfigEditorFormProps) {
   const patch = (partial: Partial<ModelConfigProfile>) => {
     onChange({ ...profile, ...partial });

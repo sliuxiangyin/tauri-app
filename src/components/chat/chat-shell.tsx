@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import {
   Sidebar,
   SidebarContent,
@@ -14,6 +15,7 @@ import {
   SidebarProvider,
 } from "@/components/ui/sidebar";
 import Ai05 from "./ai-05";
+import { useChatStore } from "@/stores/useChatStore";
 
 type Session = {
   id: string;
@@ -91,6 +93,14 @@ export default function ChatShell() {
   const [open, setOpen] = useState(true);
   const [activeId, setActiveId] = useState("1");
 
+  // 监听 store 中的消息加载状态
+  const selectedAccount = useChatStore((s) => s.selectedAccount);
+  const messages = useChatStore((s) => s.messages);
+  const isLoading = useChatStore((s) => s.isLoading);
+  useEffect(() => {
+    console.log("messages", messages);
+    console.log("isLoading", isLoading);
+  }, [isLoading]);
   return (
     <SidebarProvider
       open={open}
@@ -103,9 +113,19 @@ export default function ChatShell() {
         } as React.CSSProperties
       }
     >
+      {/* 加载遮罩 */}
+      {isLoading && (
+        <div className="absolute left-0 right-0 inset-0 z-[9999] flex items-center justify-center bg-black/10 backdrop-blur-xs">
+          <Spinner className="size-12 text-red-500" />
+        </div>
+      )}
       <ChatSessionsSidebar activeId={activeId} onSelect={setActiveId} />
-      <SidebarInset className="flex min-h-0 flex-col ">
-         <Ai05 /> 
+      <SidebarInset className="flex min-h-0 flex-col relative">
+       
+        <Ai05
+          account={selectedAccount}
+          messages={messages}
+        />
       </SidebarInset>
     </SidebarProvider>
   );

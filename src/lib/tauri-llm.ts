@@ -55,8 +55,9 @@ export async function streamLlmChat(options: {
   req: ChatRequestPayload;
   onChunk: (payload: LlmChunkPayload) => void;
   onStreamError: (payload: LlmErrorPayload) => void;
+  onStreamEnd?: () => void | Promise<void>;
 }): Promise<void> {
-  const { streamId, provider, req, onChunk, onStreamError } = options;
+  const { streamId, provider, req, onChunk, onStreamError, onStreamEnd } = options;
 
   const unlistenChunk = await listen<LlmChunkPayload>("llm:chunk", (event) => {
     console.log("[llm:chunk]", event);
@@ -79,6 +80,8 @@ export async function streamLlmChat(options: {
       provider,
       req,
     });
+    // 流结束，调用回调
+    await onStreamEnd?.();
   } finally {
     unlistenChunk();
     unlistenErr();

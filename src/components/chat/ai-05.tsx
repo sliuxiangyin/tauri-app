@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import { nanoid } from "nanoid";
 import {
   Conversation,
@@ -25,6 +25,15 @@ import {
   IconAdjustmentsHorizontal,
   IconRefresh,
 } from "@tabler/icons-react";
+import { type ChatMessage } from "@/stores/useChatStore";
+import { type AccountInfo } from "@/lib/wechat-api";
+import { invoke } from "@tauri-apps/api/core";
+
+// Props 接口
+interface Ai05Props {
+  account: AccountInfo | null
+  messages: ChatMessage[]
+}
 
 interface DemoMessage {
   id: string;
@@ -44,12 +53,41 @@ const INITIAL_MESSAGES: DemoMessage[] = [
 const MOCK_FALLBACK =
   "当前不在 Tauri 环境，或请求失败。请在桌面应用内使用，并检查 Ollama / API Key 等配置。";
 
-export default function Ai05() {
+export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
+  // 本地消息状态，用于显示
   const [messages, setMessages] = useState<DemoMessage[]>(INITIAL_MESSAGES);
   const messagesRef = useRef<DemoMessage[]>(messages);
   messagesRef.current = messages;
 
+  // 当 store 中的消息变化时，更新本地消息
+  useEffect(() => {
+    if (!account) {
+      // 未选择账号，显示欢迎消息
+      setMessages(INITIAL_MESSAGES);
+      return;
+    }
+
+    if (storeMessages.length > 0) {
+      // 将后端消息转换为前端显示格式
+      const converted = storeMessages.map((msg) => ({
+        id: msg.id,
+        role: msg.role as "user" | "assistant",
+        content: msg.content,
+      }));
+      // 在欢迎消息后面追加历史消息
+      setMessages([...INITIAL_MESSAGES, ...converted]);
+    } else {
+      // 新账号没有消息，只显示欢迎消息（清空旧消息）
+      setMessages(INITIAL_MESSAGES);
+    }
+  }, [account, storeMessages]);
+
   const handleUserSubmit = async (text: string) => {
+    if (!account) {
+      alert('请先选择一个微信账号');
+      return;
+    }
+
     const userMessage: DemoMessage = {
       id: `user-${nanoid()}`,
       role: "user",
@@ -57,6 +95,21 @@ export default function Ai05() {
     };
 
     setMessages((prev) => [...prev, userMessage]);
+
+    // 保存用户消息到数据库
+    try {
+      await invoke('save_message', {
+        payload: {
+          accountId: account.accountId,
+          chatType: 'client',
+          sessionId: 'default',
+          role: 'user',
+          content: text,
+        },
+      });
+    } catch (e) {
+      console.error('保存用户消息失败:', e);
+    }
 
     if (!isTauriRuntime()) {
       const stub: DemoMessage = {
@@ -112,6 +165,25 @@ export default function Ai05() {
             )
           );
         },
+        onStreamEnd: async () => {
+          // LLM 流结束时，保存 assistant 回复到数据库
+          const finalMessage = messagesRef.current.find((m) => m.id === assistantId);
+          if (finalMessage && account) {
+            try {
+              await invoke('save_message', {
+                payload: {
+                  accountId: account.accountId,
+                  chatType: 'client',
+                  sessionId: 'default',
+                  role: 'assistant',
+                  content: finalMessage.content,
+                },
+              });
+            } catch (e) {
+              console.error('保存 LLM 回复失败:', e);
+            }
+          }
+        },
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -132,7 +204,7 @@ export default function Ai05() {
           <div className="flex items-center gap-3">
             <div className="space-y-1">
               <div className="flex items-center gap-2 text-balance text-sm font-semibold">
-                Documenso Chat
+                {account?.accountId || 'No Account Selected'}
               </div>
               <div className="flex items-center gap-2 text-pretty text-xs text-muted-foreground">
                 <span className="inline-flex items-center gap-1">

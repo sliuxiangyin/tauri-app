@@ -34,27 +34,21 @@ impl OpenAiCompatible {
             .iter()
             .map(|m| {
                 let msg = match m.role {
-                    Role::System => {
-                        ChatCompletionRequestSystemMessageArgs::default()
-                            .content(&*m.content)
-                            .build()
-                            .map(ChatCompletionRequestMessage::System)
-                            .map_err(|e| LlmError::Config(e.to_string()))?
-                    }
-                    Role::User => {
-                        ChatCompletionRequestUserMessageArgs::default()
-                            .content(&*m.content)
-                            .build()
-                            .map(ChatCompletionRequestMessage::User)
-                            .map_err(|e| LlmError::Config(e.to_string()))?
-                    }
-                    Role::Assistant => {
-                        ChatCompletionRequestAssistantMessageArgs::default()
-                            .content(&*m.content)
-                            .build()
-                            .map(ChatCompletionRequestMessage::Assistant)
-                            .map_err(|e| LlmError::Config(e.to_string()))?
-                    }
+                    Role::System => ChatCompletionRequestSystemMessageArgs::default()
+                        .content(&*m.content)
+                        .build()
+                        .map(ChatCompletionRequestMessage::System)
+                        .map_err(|e| LlmError::Config(e.to_string()))?,
+                    Role::User => ChatCompletionRequestUserMessageArgs::default()
+                        .content(&*m.content)
+                        .build()
+                        .map(ChatCompletionRequestMessage::User)
+                        .map_err(|e| LlmError::Config(e.to_string()))?,
+                    Role::Assistant => ChatCompletionRequestAssistantMessageArgs::default()
+                        .content(&*m.content)
+                        .build()
+                        .map(ChatCompletionRequestMessage::Assistant)
+                        .map_err(|e| LlmError::Config(e.to_string()))?,
                 };
                 Ok(msg)
             })
@@ -68,13 +62,13 @@ impl LlmProvider for OpenAiCompatible {
         let messages = Self::convert_messages(&req.messages)?;
 
         let mut args = CreateChatCompletionRequestArgs::default();
-        args.model(&req.model).messages(messages).temperature(req.temperature);
+        args.model(&req.model)
+            .messages(messages)
+            .temperature(req.temperature);
         if let Some(mt) = req.max_tokens {
             args.max_tokens(mt);
         }
-        let request = args
-            .build()
-            .map_err(|e| LlmError::Config(e.to_string()))?;
+        let request = args.build().map_err(|e| LlmError::Config(e.to_string()))?;
 
         let response = self
             .client
@@ -99,13 +93,13 @@ impl LlmProvider for OpenAiCompatible {
         let messages = Self::convert_messages(&req.messages)?;
 
         let mut args = CreateChatCompletionRequestArgs::default();
-        args.model(&req.model).messages(messages).temperature(req.temperature);
+        args.model(&req.model)
+            .messages(messages)
+            .temperature(req.temperature);
         if let Some(mt) = req.max_tokens {
             args.max_tokens(mt);
         }
-        let request = args
-            .build()
-            .map_err(|e| LlmError::Config(e.to_string()))?;
+        let request = args.build().map_err(|e| LlmError::Config(e.to_string()))?;
 
         let stream = self
             .client

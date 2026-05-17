@@ -1,6 +1,8 @@
 // QRCodeLoginDialog.tsx
+"use client";
+
 import React, { useState, useEffect, useRef } from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2, RefreshCw } from "lucide-react";
 import {
     Dialog,
     DialogContent,
@@ -10,8 +12,9 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { fetchStartQr, fetchWaitQr } from "@/lib/weixing-api";
+import { startLoginStream, WechatLoginEvent, LoginError } from "@/lib/wechat-api";
 import encodeQR from "qr";
+import { UnlistenFn } from "@tauri-apps/api/event";
 
 interface QRCodeLoginDialogProps {
     open: boolean;
@@ -19,136 +22,137 @@ interface QRCodeLoginDialogProps {
     onLoginSuccess?: () => void | Promise<void>;
 }
 
-export const QRCodeLoginDialog: React.FC<QRCodeLoginDialogProps> = ({
-                                                                        open,
-                                                                        onOpenChange,
-                                                                        onLoginSuccess,
-                                                                    }) => {
-    const [isPolling, setIsPolling] = useState(false);
-    const [isLoading, setIsLoading] = useState(false);
-    const [qrSvg, setQrSvg] = useState<string>("");
-    const pollingIntervalRef = useRef<number | null>(null);
-    const currentSessionKeyRef = useRef<string>("");
-    const qrContainerRef = useRef<HTMLDivElement>(null);
+type LoginStatus = 'idle' | 'generating' | 'waiting_scan' | 'scanned' | 'confirmed' | 'success' | 'expired' | 'failed';
 
-    const stopPolling = () => {
-        if (pollingIntervalRef.current) {
-            clearInterval(pollingIntervalRef.current);
-            pollingIntervalRef.current = null;
+export const QRCodeLoginDialog: React.FC<QRCodeLoginDialogProps> = ({
+    open,
+    onOpenChange,
+    onLoginSuccess,
+}) => {
+    const [status, setStatus] = useState<LoginStatus>('idle');
+    const [qrSvg, setQrSvg] = useState<string>("");
+    const [errorMessage, setErrorMessage] = useState<string>("");
+    const [retryInfo, setRetryInfo] = useState<{ current: number; max: number } | null>(null);
+
+    const unlistenRef = useRef<UnlistenFn | null>(null);
+    const qrContainerRef = useRef<HTMLDivElement>(null);
+    const accountIdRef = useRef<string>("temp_account");
+    // 清理函数：取消事件监听并重置状态
+    const cleanup = async () => {
+        if (unlistenRef.current) {
+            await unlistenRef.current();
+            unlistenRef.current = null;
         }
-        setIsPolling(false);
+        setQrSvg("");
+        setStatus('idle');
+        setErrorMessage("");
+        setRetryInfo(null);
     };
 
-    const startPolling = async (sessionKey: string) => {
-        if (pollingIntervalRef.current) {
-            stopPolling();
-        }
-
-        setIsPolling(true);
-        currentSessionKeyRef.current = sessionKey;
-
-        const poll = async () => {
-            try {
-                const result = await fetchWaitQr(sessionKey);
-                console.log("Poll result:", result);
-
-                if (result.connected  ) {
-                    stopPolling();
-                    toast.success("微信登录成功！", {
-                        description: "您已成功连接微信账号",
-                        duration: 3000,
-                    });
-
+    // 处理登录事件
+    const handleEvent = (event: WechatLoginEvent) => {
+        console.log("Login event:", event);
+        switch (event.event_type) {
+            case 'qr_generated': {
+                const qrData = event.data.qrDataUrl;
+                // 将URL转换为二维码SVG
+                const svgString = encodeQR(qrData, 'svg', { scale: 8 });
+                setQrSvg(svgString);
+                setStatus('waiting_scan');
+                setErrorMessage("");
+                break;
+            }
+            case 'scanned':
+                setStatus('scanned');
+                break;
+            case 'confirmed':
+                setStatus('confirmed');
+                break;
+            case 'login_success':
+                setStatus('success');
+                toast.success("微信登录成功！", {
+                    description: event.data.message,
+                    duration: 3000,
+                });
+                setTimeout(async () => {
                     if (onLoginSuccess) {
                         await onLoginSuccess();
                     }
-
                     onOpenChange(false);
-                }
-            } catch (error) {
-                console.error("Polling error:", error);
-            }
-        };
-
-        await poll();
-        pollingIntervalRef.current = window.setInterval(poll, 3000);
-    };
-
-    // 从 URL 中提取二维码数据
-    const extractQRData = (url: string): string => {
-        try {
-            const urlObj = new URL(url);
-            // 尝试获取 qrcode 参数
-            const qrcode = urlObj.searchParams.get("qrcode");
-            if (qrcode) {
-                return qrcode;
-            }
-            // 如果没有 qrcode 参数，可能整个 URL 就是需要编码的内容
-            return url;
-        } catch {
-            return url;
+                }, 1500);
+                break;
+            case 'login_failed':
+                setStatus('failed');
+                setErrorMessage(event.data.message);
+                toast.error("登录失败", {
+                    description: event.data.message,
+                });
+                 onOpenChange(false);
+                break;
+            case 'qr_expired':
+                setStatus('expired');
+                setErrorMessage(event.data.message);
+                setRetryInfo({
+                    current: event.data.retry_count,
+                    max: event.data.max_retries,
+                });
+                break;
+            case 'error':
+                setStatus('failed');
+                setErrorMessage(event.data.message);
+                toast.error("登录错误", {
+                    description: event.data.message,
+                });
+                break;
         }
     };
 
-    // 生成 SVG 二维码
-    const generateQRCode = async (url: string) => {
-        setIsLoading(true);
-        try {
-            const qrData = extractQRData(url);
-            console.log("QR Data to encode:", qrData);
+    // 处理错误回调
+    const handleError = (error: LoginError) => {
+        console.error("Login error:", error);
+        setStatus('failed');
+        setErrorMessage(error.message);
+        toast.error("登录异常", {
+            description: error.message,
+        });
+    };
 
-            // 生成 SVG 二维码，scale 控制大小，border 控制边框
-            const svg = encodeQR(qrData, "svg") as unknown  as SVGElement;
-            console.log(svg);
-            // 将 SVG 元素转换为字符串
-            const serializer = new XMLSerializer();
-            const svgString = serializer.serializeToString(svg);
-            setQrSvg(svgString);
+    // 启动登录流
+    const startLogin = async () => {
+        setStatus('generating');
+        setErrorMessage("");
+
+        try {
+            const unlisten = await startLoginStream(
+                accountIdRef.current,
+                handleEvent,
+                handleError
+            );
+            unlistenRef.current = unlisten;
         } catch (error) {
-            console.error("Failed to generate QR code:", error);
-            toast.error("生成二维码失败", {
+            console.error("Failed to start login stream:", error);
+            setStatus('failed');
+            setErrorMessage(error instanceof Error ? error.message : "启动登录失败");
+            toast.error("启动登录失败", {
                 description: error instanceof Error ? error.message : "请重试",
             });
-            onOpenChange(false);
-        } finally {
-            setIsLoading(false);
         }
     };
 
-    const initQRCode = async () => {
-        try {
-            const result = await fetchStartQr();
-            console.log("QR URL:", result.qrcodeUrl);
-            // 用获取到的 URL 生成二维码
-            await generateQRCode(result.qrcodeUrl??'');
-            await startPolling(result.sessionKey);
-        } catch (error) {
-            console.error("Failed to start QR login:", error);
-            toast.error("启动微信登录失败", {
-                description: error instanceof Error ? error.message : "请重试",
-            });
-            onOpenChange(false);
-        }
+    const handleRetry = () => {
+        startLogin();
     };
 
+    // 组件挂载时启动登录流，卸载时清理资源
     useEffect(() => {
         if (open) {
-            initQRCode();
+            startLogin();
         }
 
         return () => {
-            if (!open) {
-                stopPolling();
-                setQrSvg("");
-            }
+            cleanup();
         };
     }, [open]);
-
-    useEffect(() => {
-        return () => {
-            stopPolling();
-        };
-    }, []);
 
     // 将 SVG 字符串插入 DOM
     useEffect(() => {
@@ -164,8 +168,85 @@ export const QRCodeLoginDialog: React.FC<QRCodeLoginDialogProps> = ({
     }, [qrSvg]);
 
     const handleClose = () => {
-        stopPolling();
+        cleanup();
         onOpenChange(false);
+    };
+
+    // 根据状态渲染内容
+    const renderContent = () => {
+        if (status === 'generating') {
+            return (
+                <div className="flex items-center justify-center h-64">
+                    <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
+                    <span className="ml-2 text-sm text-muted-foreground">正在生成二维码...</span>
+                </div>
+            );
+        }
+
+        if (status === 'waiting_scan' || status === 'scanned' || status === 'confirmed') {
+            return (
+                <>
+                    <div className="w-64 h-64 bg-white rounded-lg overflow-hidden flex items-center justify-center shadow-sm">
+                        <div
+                            ref={qrContainerRef}
+                            className="w-full h-full flex items-center justify-center p-2"
+                        />
+                    </div>
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        {status === 'waiting_scan' && (
+                            <>
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                                <span>等待扫码...</span>
+                            </>
+                        )}
+                        {status === 'scanned' && (
+                            <span className="text-blue-500">✓ 已扫码，请在手机确认</span>
+                        )}
+                        {status === 'confirmed' && (
+                            <span className="text-green-500">✓ 确认中...</span>
+                        )}
+                    </div>
+                </>
+            );
+        }
+
+        if (status === 'expired') {
+            return (
+                <>
+                    <div className="w-64 h-64 bg-gray-100 rounded-lg flex items-center justify-center">
+                        <RefreshCw className="h-16 w-16 text-gray-400" />
+                    </div>
+                    <div className="text-center space-y-2">
+                        <p className="text-sm text-orange-500">{errorMessage}</p>
+                        {retryInfo && retryInfo.current < retryInfo.max && (
+                            <p className="text-xs text-muted-foreground">
+                                将在 {3 - retryInfo.current} 秒后自动刷新
+                            </p>
+                        )}
+                    </div>
+                    <Button size="sm" variant="outline" onClick={handleRetry}>
+                        <RefreshCw className="h-4 w-4 mr-2" />
+                        重新获取二维码
+                    </Button>
+                </>
+            );
+        }
+
+        if (status === 'failed') {
+            return (
+                <>
+                    <div className="w-64 h-64 bg-gray-100 rounded-lg flex items-center justify-center">
+                        <p className="text-sm text-red-500 text-center px-4">{errorMessage}</p>
+                    </div>
+                    <Button size="sm" variant="outline" onClick={handleRetry}>
+                        <RefreshCw className="h-4 w-4 mr-2" />
+                        重试
+                    </Button>
+                </>
+            );
+        }
+
+        return null;
     };
 
     return (
@@ -177,34 +258,8 @@ export const QRCodeLoginDialog: React.FC<QRCodeLoginDialogProps> = ({
                         请使用微信扫描二维码完成登录
                     </DialogDescription>
                 </DialogHeader>
-                <div className="flex flex-col items-center justify-center space-y-4">
-                    <div className="relative w-64 h-64 bg-white rounded-lg overflow-hidden flex items-center justify-center shadow-sm">
-                        {isLoading ? (
-                            <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
-                        ) : qrSvg ? (
-                            <div
-                                ref={qrContainerRef}
-                                className="w-full h-full flex items-center justify-center p-2"
-                            />
-                        ) : (
-                            <div className="text-center p-4">
-                                <p className="text-sm text-red-500 mb-2">二维码生成失败</p>
-                                <Button
-                                    size="sm"
-                                    onClick={initQRCode}
-                                    variant="outline"
-                                >
-                                    重新加载
-                                </Button>
-                            </div>
-                        )}
-                    </div>
-                    {isPolling && (
-                        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                            <span>等待扫码...</span>
-                        </div>
-                    )}
+                <div className="flex flex-col items-center justify-center space-y-4 py-4">
+                    {renderContent()}
                     <p className="text-xs text-muted-foreground text-center">
                         请使用微信扫描二维码完成登录
                     </p>

@@ -10,30 +10,29 @@ function MainPage() {
     const currentTab = useTabStore((state) => state.currentTab);
     useEffect(() => {
         console.log("Main 监听到选项卡变化：", currentTab);
-        // 可在此处执行其他逻辑
     }, [currentTab]);
     return (
-        <SidebarProvider>
-            <div className="flex h-full w-full flex-col overflow-hidden">
-                <MainHeaderWithControls />
-                <div className="flex flex-1 min-h-0 bg-[#f5f5f5] overflow-hidden">
+        <div className="flex h-full w-full flex-col overflow-hidden">
+            <MainHeaderWithControls />
+            <div className="flex flex-1 min-h-0 bg-[#f5f5f5] overflow-hidden">
 
-                    {/* home 始终挂载保持状态；settings 条件渲染，进入时才加载 */}
-                    <div style={{ display: currentTab === "home" ? "flex" : "none", height: "100%", width: "100%" }}>
+                {/* home 始终挂载保持状态；settings 条件渲染，进入时才加载 */}
+                <div style={{ display: currentTab === "home" ? "flex" : "none", height: "100%", width: "100%" }}>
+                    <SidebarProvider defaultOpen={false} style={{ minHeight: "100%" } as React.CSSProperties}>
                         <AppSidebar />
                         <div className="flex h-full w-full flex-col overflow-hidden rounded-[12px]">
                             <ChatLayout />
                         </div>
-                    </div>
-                    {currentTab === "settings" && (
-                        <div className="flex h-full w-full">
-                            <DashboardPage />
-                        </div>
-                    )}
-
+                    </SidebarProvider>
                 </div>
+                {currentTab === "settings" && (
+                    <div className="flex h-full w-full">
+                        <DashboardPage />
+                    </div>
+                )}
+
             </div>
-        </SidebarProvider>
+        </div>
     );
 }
 

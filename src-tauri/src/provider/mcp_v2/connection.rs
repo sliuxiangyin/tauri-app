@@ -51,11 +51,10 @@ impl McpConnection {
 
     /// 强制刷新工具列表（绕过缓存）
     pub async fn refresh_tools(&self) -> Result<Vec<Tool>> {
-        let tools = self
-            .peer
-            .list_all_tools()
-            .await
-            .map_err(|e| McpManagerError::McpError(format!("Failed to refresh tools: {}", e)))?;
+        let tools =
+            self.peer.list_all_tools().await.map_err(|e| {
+                McpManagerError::McpError(format!("Failed to refresh tools: {}", e))
+            })?;
 
         let mut cached = self.cached_tools.write().await;
         *cached = Some(tools.clone());
@@ -71,18 +70,17 @@ impl McpConnection {
             }
             _ => CallToolRequestParams::new(tool_name.to_string()),
         };
-        let result = self
-            .peer
-            .call_tool(params)
-            .await
-            .map_err(|e| McpManagerError::ToolCallFailed {
-                message: format!("Failed to call tool '{}': {}", tool_name, e),
-            })?;
+        let result =
+            self.peer
+                .call_tool(params)
+                .await
+                .map_err(|e| McpManagerError::ToolCallFailed {
+                    message: format!("Failed to call tool '{}': {}", tool_name, e),
+                })?;
 
         // 将 CallToolResult 序列化为 serde_json::Value 返回
-        let value = serde_json::to_value(&result).map_err(|e| {
-            McpManagerError::SerializationError(e)
-        })?;
+        let value =
+            serde_json::to_value(&result).map_err(|e| McpManagerError::SerializationError(e))?;
         Ok(value)
     }
 

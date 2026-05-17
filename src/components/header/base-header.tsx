@@ -10,7 +10,6 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { Tabs ,TabsList, TabsTrigger } from "../ui/tabs";
 import { TopMenu } from "./top-menu";
 
 // 定义组件的 Props 类型

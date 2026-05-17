@@ -16,7 +16,6 @@ pub struct McpModelConfig {
     pub url: Option<String>,
 }
 
-
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "mcp_serve_config")]
 pub struct Model {

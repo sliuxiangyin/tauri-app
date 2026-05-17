@@ -1,8 +1,6 @@
-import { Trash2Icon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { cn } from "@/lib/utils";
 import type { McpServeConfig } from "@/lib/mcp-serve-api";
 import { ItemLink } from "./mcp-profile-item";
 
@@ -16,9 +14,7 @@ type McpProfileListProps = {
 
 export function McpProfileList({
   configs,
-  selectedId,
   onSelect,
-  onDelete,
   onAdd,
 }: McpProfileListProps) {
   return (

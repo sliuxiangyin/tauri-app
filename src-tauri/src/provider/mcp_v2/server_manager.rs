@@ -4,12 +4,12 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{error, info, warn};
+use tracing::error;
 
+use crate::provider::cache::Cache;
 use crate::provider::mcp_v2::config::McpServerConfig;
 use crate::provider::mcp_v2::connection::McpConnection;
 use crate::provider::mcp_v2::error::{McpManagerError, Result};
-use crate::provider::cache::Cache;
 use crate::provider::mcp_v2::transport;
 
 /// 缓存条目结构（用于持久化工具清单）
@@ -69,10 +69,8 @@ impl ServerManager {
     /// 全量初始化：为所有配置创建连接，但不加载工具清单
     pub async fn new(configs: Vec<McpServerConfig>, file_cache: Arc<Cache>) -> Result<Self> {
         let mut connections = HashMap::new();
-        let config_map: HashMap<String, McpServerConfig> = configs
-            .into_iter()
-            .map(|c| (c.id.clone(), c))
-            .collect();
+        let config_map: HashMap<String, McpServerConfig> =
+            configs.into_iter().map(|c| (c.id.clone(), c)).collect();
 
         // 尝试从缓存恢复工具清单，同时建立连接
         let mut tool_cache_map = HashMap::new();
@@ -80,17 +78,19 @@ impl ServerManager {
             // 尝试从文件缓存加载
             let key = cache_key(id);
             match file_cache.get(&key) {
-                Ok(Some(raw)) => {
-                    match serde_json::from_slice::<CacheEntry>(&raw) {
-                        Ok(entry) => {
-                            println!("Loaded {} tools from cache for server '{}'", entry.tools.len(), id);
-                            tool_cache_map.insert(id.clone(), entry.tools);
-                        }
-                        Err(e) => {
-                            println!("Failed to deserialize cache for server '{}': {}", id, e);
-                        }
+                Ok(Some(raw)) => match serde_json::from_slice::<CacheEntry>(&raw) {
+                    Ok(entry) => {
+                        println!(
+                            "Loaded {} tools from cache for server '{}'",
+                            entry.tools.len(),
+                            id
+                        );
+                        tool_cache_map.insert(id.clone(), entry.tools);
                     }
-                }
+                    Err(e) => {
+                        println!("Failed to deserialize cache for server '{}': {}", id, e);
+                    }
+                },
                 Ok(None) => {
                     println!("No cache found for server '{}', will lazy-load", id);
                 }
@@ -129,9 +129,7 @@ impl ServerManager {
         {
             let configs = self.configs.read().await;
             if configs.contains_key(&id) {
-                return Err(McpManagerError::ServerAlreadyExists {
-                    server_id: id,
-                });
+                return Err(McpManagerError::ServerAlreadyExists { server_id: id });
             }
         }
 
@@ -213,10 +211,7 @@ impl ServerManager {
                 // 单服务器：先检查内存缓存，没有则懒加载
                 let tools = self.get_or_load_tools(id).await?;
                 let configs = self.configs.read().await;
-                let name = configs
-                    .get(id)
-                    .map(|c| c.name.as_str())
-                    .unwrap_or(id);
+                let name = configs.get(id).map(|c| c.name.as_str()).unwrap_or(id);
                 Ok(tools
                     .iter()
                     .map(|t| ToolWithSource::from_tool(id, name, t))
@@ -231,10 +226,7 @@ impl ServerManager {
                     match self.get_or_load_tools(&id).await {
                         Ok(tools) => {
                             let configs = self.configs.read().await;
-                            let name = configs
-                                .get(&id)
-                                .map(|c| c.name.as_str())
-                                .unwrap_or(&id);
+                            let name = configs.get(&id).map(|c| c.name.as_str()).unwrap_or(&id);
                             let mapped: Vec<ToolWithSource> = tools
                                 .iter()
                                 .map(|t| ToolWithSource::from_tool(&id, name, t))
@@ -260,11 +252,11 @@ impl ServerManager {
         arguments: Value,
     ) -> Result<Value> {
         let connections = self.connections.read().await;
-        let conn = connections.get(server_id).ok_or_else(|| {
-            McpManagerError::ServerNotFound {
+        let conn = connections
+            .get(server_id)
+            .ok_or_else(|| McpManagerError::ServerNotFound {
                 server_id: server_id.to_string(),
-            }
-        })?;
+            })?;
 
         conn.call_tool(tool_name, arguments).await
     }
@@ -282,11 +274,11 @@ impl ServerManager {
     /// 刷新指定服务器的工具缓存（强制从 MCP 服务器重新加载）
     pub async fn refresh_tools(&self, server_id: &str) -> Result<Vec<ToolWithSource>> {
         let connections = self.connections.read().await;
-        let conn = connections.get(server_id).ok_or_else(|| {
-            McpManagerError::ServerNotFound {
+        let conn = connections
+            .get(server_id)
+            .ok_or_else(|| McpManagerError::ServerNotFound {
                 server_id: server_id.to_string(),
-            }
-        })?;
+            })?;
 
         let tools = conn.refresh_tools().await?;
 
@@ -348,7 +340,10 @@ impl ServerManager {
                 }
             }
             Err(e) => {
-                println!("Failed to serialize cache for server '{}': {}", server_id, e);
+                println!(
+                    "Failed to serialize cache for server '{}': {}",
+                    server_id, e
+                );
             }
         }
     }
@@ -365,11 +360,11 @@ impl ServerManager {
 
         // 懒加载：从 MCP 服务器获取
         let connections = self.connections.read().await;
-        let conn = connections.get(server_id).ok_or_else(|| {
-            McpManagerError::ServerNotFound {
+        let conn = connections
+            .get(server_id)
+            .ok_or_else(|| McpManagerError::ServerNotFound {
                 server_id: server_id.to_string(),
-            }
-        })?;
+            })?;
 
         let tools = conn.list_tools().await?;
 

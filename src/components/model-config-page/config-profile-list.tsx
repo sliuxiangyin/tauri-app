@@ -1,9 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
-import { ProfileListItem } from "./config-profile-list-item";
-import type { ModelConfigProfile } from "./types";
-import { ReactNode } from "react";
 
 type ProfileListProps<T>  = {
   profiles: T[];

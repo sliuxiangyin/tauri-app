@@ -1,9 +1,7 @@
 import { useTabStore } from "@/stores/useTabStore"
 import { Tabs, TabsList, TabsTrigger } from "../ui/tabs"
 import { useEffect, useState } from "react"
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuGroup, DropdownMenuLabel, DropdownMenuItem } from "../ui/dropdown-menu"
 import { useNavigate } from "react-router-dom"
-import { cn } from "@/lib/utils"
 import { Button } from "../ui/button"
 import { HoverCard, HoverCardTrigger, HoverCardContent } from "../ui/hover-card"
 export const TopMenu = () => {

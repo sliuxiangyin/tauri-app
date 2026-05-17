@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use axum::{extract::State, Json};
 use log::info;
-use tauri_plugin_notification::NotificationExt;
 
 use super::channel::WebhookChannel;
 use super::error::ServerError;
@@ -36,7 +35,11 @@ pub async fn webhook_handler(
     // 注意：在 axum handler 中无法直接获取 AppHandle，
     // 通知发送通过 commands 模块中的监听任务统一处理
     // 此处仅记录日志，实际通知由 wechat_listen_messages 任务触发
-    log::info!("已触发消息通知: from={} body={}", payload.from, body_preview);
+    log::info!(
+        "已触发消息通知: from={} body={}",
+        payload.from,
+        body_preview
+    );
 
     Ok(Json(SuccessResponse::default()))
 }

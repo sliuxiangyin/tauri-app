@@ -1,8 +1,11 @@
-use sea_orm::{ActiveModelTrait, EntityTrait, NotSet, QueryOrder, Set};
-use serde::{Deserialize, Serialize};
 use crate::db::DbState;
 use crate::entity::mcp_serve_config::{self as msc, McpModelConfig};
-use crate::provider::mcp_v2::{McpServerConfig, McpV2State, ToolWithSource};
+use crate::provider::mcp_v2::ToolWithSource;
+use crate::services::db::mcp as mcp_db;
+use crate::services::mcp_manager::McpServiceManager;
+use sea_orm::{ActiveModelTrait, EntityTrait, NotSet, QueryOrder, Set};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 // ---------------------------------------------------------------------------
 // Config 结构化 DTO（与前端 mcp-service.ts 对应）
 // ---------------------------------------------------------------------------
@@ -57,10 +60,10 @@ fn model_to_dto(m: msc::Model) -> Result<McpServeConfigDto, String> {
 #[tauri::command]
 pub async fn list_mcp_serve_configs(
     state: tauri::State<'_, DbState>,
-    mcp_state: tauri::State<'_, McpV2State>,
+    mcp_manager: tauri::State<'_, Arc<McpServiceManager>>,
 ) -> Result<Vec<McpServeConfigDto>, String> {
     let db = state.get().await.map_err(|e| e.to_string())?;
-
+    tracing::debug!("Listing MCP serve configs");
     let configs = msc::Entity::find()
         .order_by_asc(msc::Column::Id)
         .all(&*db)
@@ -71,21 +74,34 @@ pub async fn list_mcp_serve_configs(
         .into_iter()
         .map(model_to_dto)
         .collect::<Result<Vec<_>, _>>()?;
-    // MCP v2 可能尚未初始化完成，读取时检查
-    let guard = mcp_state.read().await;
-    if let Some(ref mcp_api) = *guard {
-        for dto in &mut dtos {
-            let id_str = dto.id.to_string();
-            // 获取连接状态
-            dto.state = mcp_api.is_connected(&id_str).await;
-            // 获取该服务器的工具列表
-            match mcp_api.list_tools(Some(&id_str)).await {
-                Ok(tools) => {
-                    dto.tools = tools;
+
+    // 获取 MCP API（可能尚未初始化）
+    match mcp_manager.get_api().await {
+        Ok(Some(mcp_api)) => {
+            for dto in &mut dtos {
+                let id_str = dto.id.to_string();
+                // 获取连接状态
+                dto.state = mcp_api.is_connected(&id_str).await;
+                // 获取该服务器的工具列表
+                match mcp_api.list_tools(Some(&id_str)).await {
+                    Ok(tools) => {
+                        dto.tools = tools;
+                    }
+                    Err(e) => {
+                        dto.error = Some(e.to_string());
+                    }
                 }
-                Err(e) => {
-                    dto.error = Some(e.to_string());
-                }
+            }
+        }
+        Ok(None) => {
+            // 正在初始化中，返回基础信息
+            tracing::debug!("MCP service is still initializing");
+        }
+        Err(e) => {
+            // 初始化失败
+            tracing::warn!("MCP service initialization failed: {}", e);
+            for dto in &mut dtos {
+                dto.error = Some(format!("MCP服务未就绪: {}", e));
             }
         }
     }
@@ -98,9 +114,10 @@ pub async fn list_mcp_serve_configs(
 pub async fn create_mcp_serve_config(
     state: tauri::State<'_, DbState>,
     payload: CreateMcpServeConfigPayload,
-    mcp_state: tauri::State<'_, McpV2State>,
+    mcp_manager: tauri::State<'_, Arc<McpServiceManager>>,
 ) -> Result<McpServeConfigDto, String> {
-    let db: std::sync::Arc<sea_orm::prelude::DatabaseConnection> = state.get().await.map_err(|e| e.to_string())?;
+    let db: std::sync::Arc<sea_orm::prelude::DatabaseConnection> =
+        state.get().await.map_err(|e| e.to_string())?;
 
     let config_json = serde_json::to_string(&payload.config)
         .map_err(|e| format!("config serialize error: {e}"))?;
@@ -113,9 +130,12 @@ pub async fn create_mcp_serve_config(
     };
 
     let model = active.insert(&*db).await.map_err(|e| e.to_string())?;
-    let guard = mcp_state.read().await;
-    if let Some(ref mcp_api) = *guard {
-        match McpServerConfig::try_from(model.clone()) {
+
+    // 尝试添加到 MCP 服务
+    if let Ok(Some(mcp_api)) = mcp_manager.get_api().await {
+        // 使用新的数据服务层转换
+        let record = mcp_db::McpConfigRecord::from(model.clone());
+        match mcp_db::record_to_server_config(record) {
             Ok(config) => {
                 mcp_api.add_server(config).await?;
             }
@@ -124,6 +144,7 @@ pub async fn create_mcp_serve_config(
             }
         }
     }
+
     model_to_dto(model)
 }
 
@@ -133,7 +154,7 @@ pub async fn update_mcp_serve_config(
     state: tauri::State<'_, DbState>,
     id: i32,
     payload: UpdateMcpServeConfigPayload,
-    mcp_state: tauri::State<'_, McpV2State>,
+    mcp_manager: tauri::State<'_, Arc<McpServiceManager>>,
 ) -> Result<McpServeConfigDto, String> {
     let db = state.get().await.map_err(|e| e.to_string())?;
     let entity = msc::Entity::find_by_id(id)
@@ -155,10 +176,11 @@ pub async fn update_mcp_serve_config(
     active.updated_at = Set(chrono::Utc::now());
 
     let model = active.update(&*db).await.map_err(|e| e.to_string())?;
-    // 尝试转换为 McpServerConfig 并更新运行时
-    let guard = mcp_state.read().await;
-    if let Some(ref mcp_api) = *guard {
-        match McpServerConfig::try_from(model.clone()) {
+
+    // 尝试更新 MCP 服务
+    if let Ok(Some(mcp_api)) = mcp_manager.get_api().await {
+        let record = mcp_db::McpConfigRecord::from(model.clone());
+        match mcp_db::record_to_server_config(record) {
             Ok(config) => {
                 mcp_api.update_server(&format!("{}", id), config).await?;
             }
@@ -175,7 +197,7 @@ pub async fn update_mcp_serve_config(
 pub async fn delete_mcp_serve_config(
     state: tauri::State<'_, DbState>,
     id: i32,
-    mcp_state: tauri::State<'_, McpV2State>,
+    mcp_manager: tauri::State<'_, Arc<McpServiceManager>>,
 ) -> Result<(), String> {
     let db = state.get().await.map_err(|e| e.to_string())?;
     msc::Entity::delete_by_id(id)
@@ -183,8 +205,7 @@ pub async fn delete_mcp_serve_config(
         .await
         .map_err(|e| e.to_string())?;
 
-    let guard = mcp_state.read().await;
-    if let Some(ref mcp_api) = *guard {
+    if let Ok(Some(mcp_api)) = mcp_manager.get_api().await {
         mcp_api.remove_server(&format!("{}", id)).await?;
     }
     Ok(())

@@ -50,10 +50,17 @@ rmcp = { version = "1.6.0", features = [
 arc-swap = "1"
 tracing = "0.1"
 log = "0.4.29"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 axum = "0.8"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "timeout", "cors"] }
 tauri-plugin-notification = "2"
 async-openai = { version = "0.38.2", features = ["chat-completion"] }
 sled = "0.34.7"
+nanoid = "0.4"
+tauri-plugin-store = "2"
 
+
+
+[profile.dev]
+incremental = false

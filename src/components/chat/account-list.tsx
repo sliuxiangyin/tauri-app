@@ -15,26 +15,54 @@ import {
     useSidebar,
 } from "@/components/ui/sidebar";
 import { getAccounts, AccountInfo } from "@/lib/wechat-api";
+import { useChatStore } from "@/stores/useChatStore";
 import AccountItem from "./account-item";
 import {
     Tooltip,
     TooltipContent,
     TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { QRCodeLoginDialog } from "./qr-code-login-dialog";
+
 const AccountListContent = () => {
     const [accounts, setAccounts] = useState<AccountInfo[]>([]);
     const [activeId, setActiveId] = useState("");
     const { state } = useSidebar();
+    const setSelectedAccount = useChatStore((s) => s.setSelectedAccount);
     const isCollapsed = state === "collapsed";
     const [isDialogOpen, setIsDialogOpen] = useState(false);
     useEffect(() => {
         loadAccounts();
     }, []);
+
     // 加载账户列表
     const loadAccounts = async () => {
         try {
             const response = await getAccounts();
             setAccounts(response.accounts);
+            
+            // 检查是否有持久化保存的账号
+            const { selectedAccount: savedAccount } = useChatStore.getState();
+                console.log("已保存的账号:", savedAccount);
+            // 如果有已保存的账号且仍然存在于账户列表中，优先使用
+            if (savedAccount && response.accounts.length > 0) {
+                const stillExists = response.accounts.find(a => a.accountId === savedAccount.accountId);
+                if (stillExists) {
+                    setActiveId(savedAccount.accountId);
+                    setSelectedAccount(savedAccount);
+                    console.log("恢复已选账号:", savedAccount);
+                    return;
+                }
+            }
+            
+            
+            // 如果没有已保存的账号，自动选择第一个
+            if (response.accounts.length > 0 && !savedAccount) {
+                const firstAccount = response.accounts[0];
+                setActiveId(firstAccount.accountId);
+                setSelectedAccount(firstAccount);
+                console.log("自动选择首个账户:", firstAccount);
+            }
         } catch (error) {
             console.error("加载账户列表失败:", error);
         }
@@ -86,7 +114,11 @@ const AccountListContent = () => {
                                 account={account}
                                 isActive={activeId === account.accountId}
                                 isCollapsed={isCollapsed}
-                                onClick={setActiveId}
+                                onClick={(accountId) => {
+                                    setActiveId(accountId);
+                                    setSelectedAccount(account);
+                                    console.log("切换账号:", account);
+                                }}
                                 onDelete={(accountId) => {
                                     console.log("删除账户:", accountId);
                                     // TODO: 调用删除账户 API
@@ -117,7 +149,7 @@ const AccountListContent = () => {
                         </Button>
                     </TooltipTrigger>
                     {isCollapsed && (
-                        <TooltipContent side="right">
+                        <TooltipContent side="right" className="cursor-pointer font-medium text-white">
                             <p>添加账户</p>
                         </TooltipContent>
                     )}
@@ -125,11 +157,11 @@ const AccountListContent = () => {
             </SidebarFooter>
 
             {/* 二维码登录对话框组件 */}
-            {/*<QRCodeLoginDialog*/}
-            {/*    open={isDialogOpen}*/}
-            {/*    onOpenChange={setIsDialogOpen}*/}
-            {/*    onLoginSuccess={handleLoginSuccess}*/}
-            {/*/>*/}
+            <QRCodeLoginDialog
+             open={isDialogOpen}
+             onOpenChange={setIsDialogOpen}
+             onLoginSuccess={handleLoginSuccess}
+           />
         </div>
     );
 };

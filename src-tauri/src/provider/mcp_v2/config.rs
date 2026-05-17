@@ -11,9 +11,7 @@ pub enum TransportConfig {
         args: Vec<String>,
     },
     #[serde(rename = "http")]
-    Http {
-        url: String,
-    },
+    Http { url: String },
 }
 
 /// 单个 MCP 服务器配置

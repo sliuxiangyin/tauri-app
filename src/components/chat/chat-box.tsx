@@ -14,6 +14,7 @@ import {
   IconBolt,
   IconMessageCircle,
   IconPaperclip,
+  IconTool,
 } from "@tabler/icons-react";
 import { cn } from "@/lib/utils";
 
@@ -70,6 +71,9 @@ export function ChatBox({ onUserSubmit, className }: ChatBoxProps) {
             </PromptInputButton>
             <PromptInputButton aria-label="New chat">
               <IconMessageCircle className="size-4" />
+            </PromptInputButton>
+            <PromptInputButton aria-label="工具">
+              <IconTool className="size-4" />
             </PromptInputButton>
           </PromptInputTools>
           <PromptInputSubmit

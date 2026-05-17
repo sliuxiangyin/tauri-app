@@ -382,21 +382,6 @@ export async function example3_multipleServices() {
   }
 }
 
-/**
- * 示例 4: React Hook 集成
- */
-export function useAutoMcpConnect(serviceId: string, config: McpModelConfig) {
-  // 伪代码：在 React 中使用
-  // useEffect(() => {
-  //   McpService.connect({ service_id: serviceId, config })
-  //     .catch((error) => console.error('连接失败:', error));
-  //
-  //   return () => {
-  //     McpService.disconnect(serviceId)
-  //       .catch((error) => console.error('断开失败:', error));
-  //   };
-  // }, [serviceId]);
-}
 
 /**
  * 示例 5: 错误处理

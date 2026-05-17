@@ -54,7 +54,9 @@ impl McpV2Api {
         tool_name: &str,
         arguments: Value,
     ) -> Result<Value> {
-        self.manager.call_tool(server_id, tool_name, arguments).await
+        self.manager
+            .call_tool(server_id, tool_name, arguments)
+            .await
     }
 
     /// 列出所有已连接的服务器配置
@@ -76,8 +78,6 @@ impl McpV2Api {
     pub async fn refresh_all(&self) {
         self.manager.refresh_all().await;
     }
-
-  
 
     /// 优雅关闭
     pub async fn shutdown(&self) {
