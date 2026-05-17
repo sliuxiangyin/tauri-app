@@ -320,7 +320,7 @@ export async function example3_multipleServices() {
 
 
 /**
- * 示例 5: 错误处理
+ * 示例 5: 错误 处理
  */
 export async function example5_errorHandling() {
   console.log('\n========== 示例 5: 错误处理 ==========');
