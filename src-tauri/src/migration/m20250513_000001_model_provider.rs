@@ -53,13 +53,15 @@ impl MigrationTrait for Migration {
                     )
                     .col(
                         ColumnDef::new(ModelProviderConfig::CreatedAt)
-                            .string()
-                            .null(),
+                            .integer()
+                            .not_null()
+                            .default(0),
                     )
                     .col(
                         ColumnDef::new(ModelProviderConfig::UpdatedAt)
-                            .string()
-                            .null(),
+                            .integer()
+                            .not_null()
+                            .default(0),
                     )
                     .to_owned(),
             )

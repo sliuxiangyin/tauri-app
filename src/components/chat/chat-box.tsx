@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { ChatStatus } from "ai";
 import {
   PromptInput,
@@ -16,19 +16,23 @@ import {
   IconPaperclip,
   IconTool,
 } from "@tabler/icons-react";
+import { cancelLlmChat, isTauriRuntime } from "@/lib/tauri-llm";
 import { cn } from "@/lib/utils";
 
 const inputGroupClassName =
   "w-full [&>[data-slot=input-group]]:rounded-none [&>[data-slot=input-group]]:shadow-none [&>[data-slot=input-group]]:border-t [&>[data-slot=input-group]]:border-x-0 [&>[data-slot=input-group]]:border-b-0 [&>[data-slot=input-group]]:border-border/80 [&>[data-slot=input-group]]:focus-within:ring-0 [&>[data-slot=input-group]]:focus-within:ring-transparent [&>[data-slot=input-group]]:focus-within:ring-offset-0 [&>[data-slot=input-group]]:focus-within:border-border/80 [&>[data-slot=input-group]]:focus-within:outline-none";
 
 export type ChatBoxProps = {
+  accountId?: string;
   onUserSubmit?: (text: string) => void | Promise<void>;
   className?: string;
 };
 
-export function ChatBox({ onUserSubmit, className }: ChatBoxProps) {
+export function ChatBox({ accountId, onUserSubmit, className }: ChatBoxProps) {
   const [inputValue, setInputValue] = useState("");
   const [status, setStatus] = useState<ChatStatus>("ready");
+  const accountIdRef = useRef(accountId);
+  accountIdRef.current = accountId;
 
   const handleSubmit = useCallback(
     async (text: string) => {
@@ -49,6 +53,14 @@ export function ChatBox({ onUserSubmit, className }: ChatBoxProps) {
     },
     [onUserSubmit]
   );
+
+  const handleCancel = useCallback(async () => {
+    const accId = accountIdRef.current;
+    if (accId && isTauriRuntime()) {
+      console.log("[ChatBox] 取消 LLM 流式响应, accountId:", accId);
+      await cancelLlmChat(accId);
+    }
+  }, []);
 
   return (
     <div className={cn("shrink-0 bg-background", className)}>
@@ -79,6 +91,7 @@ export function ChatBox({ onUserSubmit, className }: ChatBoxProps) {
           <PromptInputSubmit
             status={status}
             disabled={!inputValue.trim() || status !== "ready"}
+            onClick={status === "streaming" ? handleCancel : undefined}
           />
         </PromptInputFooter>
       </PromptInput>

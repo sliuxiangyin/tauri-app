@@ -11,10 +11,11 @@ use super::DbError;
 const DB_FILE: &str = "app.db";
 
 pub async fn connect_sqlite(app: &AppHandle) -> Result<DatabaseConnection, DbError> {
-    let dir = app
+    let dir: std::path::PathBuf = app
         .path()
         .app_data_dir()
         .map_err(|e| DbError::TauriPath(e.to_string()))?;
+    tracing::debug!("DB dir: {}", dir.display());
     std::fs::create_dir_all(&dir)?;
     let db_path = dir.join(DB_FILE);
     let url = sqlite_file_url(&db_path)?;
@@ -25,7 +26,7 @@ pub async fn connect_sqlite(app: &AppHandle) -> Result<DatabaseConnection, DbErr
     Ok(conn)
 }
 
-fn sqlite_file_url(path: &Path) -> Result<String, DbError> {
+pub fn sqlite_file_url(path: &Path) -> Result<String, DbError> {
     let abs = std::path::absolute(path).map_err(|e| DbError::Path(e.to_string()))?;
     let s = abs.to_string_lossy().replace('\\', "/");
     let url = if s.starts_with('/') {

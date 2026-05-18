@@ -20,6 +20,7 @@ impl McpV2Api {
     }
 
     /// 获取内部 ServerManager 引用
+    #[allow(dead_code)]
     pub fn manager(&self) -> &Arc<ServerManager> {
         &self.manager
     }
@@ -48,6 +49,7 @@ impl McpV2Api {
     }
 
     /// 调用工具
+    #[allow(dead_code)]
     pub async fn call_tool(
         &self,
         server_id: &str,
@@ -60,6 +62,7 @@ impl McpV2Api {
     }
 
     /// 列出所有已连接的服务器配置
+    #[allow(dead_code)]
     pub async fn list_servers(&self) -> Vec<McpServerConfig> {
         self.manager.list_servers().await
     }
@@ -70,16 +73,19 @@ impl McpV2Api {
     }
 
     /// 刷新指定服务器的工具缓存
+    #[allow(dead_code)]
     pub async fn refresh_tools(&self, server_id: &str) -> Result<Vec<ToolWithSource>> {
         self.manager.refresh_tools(server_id).await
     }
 
     /// 刷新所有服务器的工具缓存
+    #[allow(dead_code)]
     pub async fn refresh_all(&self) {
         self.manager.refresh_all().await;
     }
 
     /// 优雅关闭
+    #[allow(dead_code)]
     pub async fn shutdown(&self) {
         self.manager.shutdown().await;
     }

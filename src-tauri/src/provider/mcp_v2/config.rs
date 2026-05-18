@@ -27,6 +27,7 @@ pub struct McpServerConfig {
 
 /// 全局 mcp-v2 配置
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct McpV2Config {
     /// 缓存目录路径
     pub cache_dir: String,

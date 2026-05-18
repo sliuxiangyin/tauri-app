@@ -1,4 +1,6 @@
 use std::pin::Pin;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures_util::Stream;
@@ -13,5 +15,9 @@ pub type LlmStream = Pin<Box<dyn Stream<Item = Result<LlmStreamEvent, LlmError>>
 pub trait LlmProvider: Send + Sync {
     async fn send_message(&self, req: ChatRequest) -> Result<String, LlmError>;
 
-    async fn stream_chat(&self, req: ChatRequest) -> Result<LlmStream, LlmError>;
+    async fn stream_chat(
+        &self,
+        req: ChatRequest,
+        abort_flag: Arc<AtomicBool>,
+    ) -> Result<LlmStream, LlmError>;
 }

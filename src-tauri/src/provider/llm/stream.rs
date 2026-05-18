@@ -8,6 +8,9 @@ pub enum LlmStreamEvent {
     Done,
 }
 
+/// 流式事件发送端：由调用方创建并传入，供 `stream_chat` 内部转发流式片段。
+pub type LlmStreamSender = tokio::sync::mpsc::UnboundedSender<LlmStreamEvent>;
+
 /// 推送到前端的 `llm:chunk` 载荷：固定带 `account_id`，便于 `listen` 里按账号过滤。
 #[derive(Debug, Clone, Serialize)]
 pub struct LlmChunkEnvelope {

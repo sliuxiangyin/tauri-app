@@ -1,10 +1,9 @@
 pub use sea_orm_migration::prelude::*;
 
 mod m20250512_000001_placeholder;
-mod m20250513_000001_ai_chat_messages_provider;
+mod m20250513_000001_ai_chat_messages;
 mod m20250513_000001_model_provider;
 mod m20250514_000001_mcp_serve_config;
-mod m20250517_000001_update_chat_type_enum;
 
 pub struct Migrator;
 
@@ -14,9 +13,8 @@ impl MigratorTrait for Migrator {
         vec![
             Box::new(m20250512_000001_placeholder::Migration),
             Box::new(m20250513_000001_model_provider::Migration),
-            Box::new(m20250513_000001_ai_chat_messages_provider::Migration),
+            Box::new(m20250513_000001_ai_chat_messages::Migration),
             Box::new(m20250514_000001_mcp_serve_config::Migration),
-            Box::new(m20250517_000001_update_chat_type_enum::Migration),
         ]
     }
 }

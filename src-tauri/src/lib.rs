@@ -40,8 +40,14 @@ pub fn run() {
             provider::server::start_http_server(app);
 
             // 初始化通用缓存管理器（单例，整个应用共享）
-            let cache = Arc::new(Cache::open("./app-cache").expect("Failed to initialize cache"));
-            app.manage(cache.clone());
+            let cache = Cache::open("./app-cache").expect("Failed to initialize cache");
+            // 设置全局单例并获取 Arc 包装
+            let cache_arc = Cache::set_global(cache).expect("Failed to set Cache global");
+            // 注册到 Tauri State（供需要 State 的命令使用）
+            app.manage(cache_arc.clone());
+
+            // 初始化 LLM abort flags 管理器
+            app.manage(commands::llm::LlmAbortFlags::new());
 
             // 启动微信消息服务（在后台运行）
             let wechat_client = provider::wechat::WechatClient::new(wechat_url);
@@ -50,7 +56,7 @@ pub fn run() {
                 .inner()
                 .clone();
             let db_state_for_wechat = db_state.clone();
-            let cache_for_wechat = cache.clone();
+            let cache_for_wechat = cache_arc.clone();
             tauri::async_runtime::spawn(async move {
                 services::wechat_message::start_wechat_message_service(
                     app_handle.clone(),
@@ -69,7 +75,7 @@ pub fn run() {
 
             // 在后台异步初始化
             let db_state_for_mcp = db_state.clone();
-            let cache_for_mcp = cache.clone();
+            let cache_for_mcp = cache_arc.clone();
             tauri::async_runtime::spawn(async move {
                 mcp_manager
                     .initialize(&db_state_for_mcp, cache_for_mcp)
@@ -83,6 +89,7 @@ pub fn run() {
             commands::db::db_health_check,
             commands::llm::llm_chat_once,
             commands::llm::llm_chat_stream,
+            commands::llm::llm_chat_cancel,
             commands::model_config::list_provider_configs,
             commands::model_config::create_provider_config,
             commands::model_config::update_provider_config,

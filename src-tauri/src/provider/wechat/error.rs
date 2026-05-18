@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+#[allow(dead_code)]
 pub enum WechatError {
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),

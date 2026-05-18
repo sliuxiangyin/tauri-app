@@ -12,8 +12,8 @@ pub struct Model {
     pub api_key: Option<String>,
     pub extra_json: Option<String>,
     pub sort_index: i32,
-    pub created_at: Option<String>,
-    pub updated_at: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

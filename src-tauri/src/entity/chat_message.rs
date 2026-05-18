@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 /// 消息角色枚举（LLM 语义角色）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub enum MessageRole {
     User,
     Assistant,
@@ -15,6 +16,7 @@ pub enum MessageRole {
 
 impl MessageRole {
     /// 从字符串转换为枚举
+    #[allow(dead_code)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "user" => MessageRole::User,
@@ -26,6 +28,7 @@ impl MessageRole {
     }
 
     /// 转换为字符串
+    #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
             MessageRole::User => "user",
@@ -38,6 +41,7 @@ impl MessageRole {
 
 /// 聊天类型枚举（消息来源渠道）
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub enum ChatType {
     Client, // 客户端（用户直接对话）
     Wechat, // 微信端（通过微信收到的消息）
@@ -45,6 +49,7 @@ pub enum ChatType {
 
 impl ChatType {
     /// 从字符串转换为枚举
+    #[allow(dead_code)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "client" => ChatType::Client,
@@ -54,6 +59,7 @@ impl ChatType {
     }
 
     /// 转换为字符串
+    #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
             ChatType::Client => "client",
@@ -64,6 +70,7 @@ impl ChatType {
 
 /// 消息状态枚举
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub enum MessageStatus {
     Pending,
     Completed,
@@ -71,6 +78,7 @@ pub enum MessageStatus {
 }
 
 impl MessageStatus {
+    #[allow(dead_code)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "pending" => MessageStatus::Pending,
@@ -80,6 +88,7 @@ impl MessageStatus {
         }
     }
 
+    #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
             MessageStatus::Pending => "pending",
@@ -93,7 +102,7 @@ impl MessageStatus {
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
 #[sea_orm(table_name = "messages")]
 pub struct Model {
-    #[sea_orm(primary_key)]
+    #[sea_orm(primary_key, auto_increment = false)]
     pub id: String,
 
     /// 微信账号 ID（多账号隔离）
@@ -156,9 +165,9 @@ pub struct Model {
     #[sea_orm(column_name = "token_usage", nullable)]
     pub token_usage: Option<String>,
 
-    /// 创建时间
+    /// 创建时间（Unix 时间戳秒数）
     #[sea_orm(column_name = "created_at")]
-    pub created_at: DateTime,
+    pub created_at: i64,
 
     /// 元数据 JSON
     #[sea_orm(column_name = "metadata")]
@@ -176,6 +185,7 @@ impl ActiveModelBehavior for ActiveModel {}
 
 /// 查询消息的选项
 #[derive(Debug, Default)]
+#[allow(dead_code)]
 pub struct MessageQueryOptions {
     /// 账号 ID（必填）
     pub account_id: String,

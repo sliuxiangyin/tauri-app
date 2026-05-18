@@ -1,7 +1,12 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde_json::{json, Value};
+use tokio::time::timeout;
 
 use super::error::LlmError;
 use super::provider_trait::{LlmProvider, LlmStream};
@@ -76,7 +81,11 @@ impl LlmProvider for OllamaProvider {
         Ok(content)
     }
 
-    async fn stream_chat(&self, req: ChatRequest) -> Result<LlmStream, LlmError> {
+    async fn stream_chat(
+        &self,
+        req: ChatRequest,
+        abort_flag: Arc<AtomicBool>,
+    ) -> Result<LlmStream, LlmError> {
         let url = join_url(&self.base_url, "/api/chat");
         let body = json!({
             "model": req.model,
@@ -103,50 +112,64 @@ impl LlmProvider for OllamaProvider {
             let mut buf = String::new();
             let mut prev_assistant = String::new();
             futures_util::pin_mut!(bytes_stream);
-            while let Some(chunk) = bytes_stream.next().await {
-                let chunk = chunk.map_err(LlmError::Http)?;
-                buf.push_str(&String::from_utf8_lossy(&chunk));
-                loop {
-                    let idx = match buf.find('\n') {
-                        Some(i) => i,
-                        None => break,
-                    };
-                    let mut line = buf[..idx].to_string();
-                    if line.ends_with('\r') {
-                        line.pop();
-                    }
-                    buf.drain(..=idx);
+            loop {
+                if abort_flag.load(Ordering::SeqCst) {
+                    yield LlmStreamEvent::Done;
+                    return;
+                }
+                match timeout(Duration::from_millis(200), bytes_stream.next()).await {
+                    Ok(Some(chunk)) => {
+                        let chunk = chunk.map_err(LlmError::Http)?;
+                        buf.push_str(&String::from_utf8_lossy(&chunk));
+                        loop {
+                            let idx = match buf.find('\n') {
+                                Some(i) => i,
+                                None => break,
+                            };
+                            let mut line = buf[..idx].to_string();
+                            if line.ends_with('\r') {
+                                line.pop();
+                            }
+                            buf.drain(..=idx);
 
-                    let line = line.trim();
-                    if line.is_empty() {
-                        continue;
-                    }
-                    let v: Value = match serde_json::from_str(line) {
-                        Ok(v) => v,
-                        Err(_) => continue,
-                    };
-                    if let Some(role) = v["message"]["role"].as_str() {
-                        if role == "assistant" {
-                            if let Some(c) = v["message"]["content"].as_str() {
-                                if c.starts_with(&prev_assistant) {
-                                    let delta = &c[prev_assistant.len()..];
-                                    prev_assistant = c.to_string();
-                                    if !delta.is_empty() {
-                                        yield LlmStreamEvent::TextDelta {
-                                            text: delta.to_string(),
-                                        };
+                            let line = line.trim();
+                            if line.is_empty() {
+                                continue;
+                            }
+                            let v: Value = match serde_json::from_str(line) {
+                                Ok(v) => v,
+                                Err(_) => continue,
+                            };
+                            if let Some(role) = v["message"]["role"].as_str() {
+                                if role == "assistant" {
+                                    if let Some(c) = v["message"]["content"].as_str() {
+                                        if c.starts_with(&prev_assistant) {
+                                            let delta = &c[prev_assistant.len()..];
+                                            prev_assistant = c.to_string();
+                                            if !delta.is_empty() {
+                                                yield LlmStreamEvent::TextDelta {
+                                                    text: delta.to_string(),
+                                                };
+                                            }
+                                        }
                                     }
                                 }
                             }
+                            if v.get("done") == Some(&json!(true)) {
+                                yield LlmStreamEvent::Done;
+                                return;
+                            }
                         }
                     }
-                    if v.get("done") == Some(&json!(true)) {
+                    Ok(None) => {
                         yield LlmStreamEvent::Done;
                         return;
                     }
+                    Err(_) => {
+                        // timeout: continue loop and check abort_flag
+                    }
                 }
             }
-            yield LlmStreamEvent::Done;
         };
 
         Ok(Box::pin(s))

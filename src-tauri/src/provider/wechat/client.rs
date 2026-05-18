@@ -44,6 +44,7 @@ impl WechatClient {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_client(client: Client, base_url: String) -> Self {
         let sse_client = SseClient::new(client.clone(), base_url.clone());
         Self {
@@ -120,6 +121,7 @@ impl WechatClient {
         }
 
         let text = response.text().await?;
+        tracing::debug!("[WechatClient] send_message response: {}", text);
         let result: SendMessageResponse = serde_json::from_str(&text)?;
 
         Ok(result)

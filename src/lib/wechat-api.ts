@@ -194,6 +194,5 @@ export async function sendMessage(req: SendMessageRequest): Promise<SendMessageR
  */
 export async function getAccounts(): Promise<AccountsResponse> {
   let response = await invoke<AccountsResponse>('wechat_get_accounts');
-  console.log("getAccounts:",response)
   return response;
 }

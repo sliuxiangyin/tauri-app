@@ -1,5 +1,5 @@
-use crate::provider::scheduler::scheduler::SchedulingPolicy;
-use crate::provider::scheduler::{Scheduler, SchedulerError};
+use crate::provider::scheduler::scheduler::{Scheduler, SchedulingPolicy};
+use crate::provider::scheduler::error::SchedulerError;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;

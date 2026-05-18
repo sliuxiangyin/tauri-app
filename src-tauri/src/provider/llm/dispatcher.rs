@@ -1,3 +1,6 @@
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 
 use super::anthropic::AnthropicProvider;
@@ -46,11 +49,15 @@ impl LlmProvider for Provider {
         }
     }
 
-    async fn stream_chat(&self, req: ChatRequest) -> Result<LlmStream, LlmError> {
+    async fn stream_chat(
+        &self,
+        req: ChatRequest,
+        abort_flag: Arc<AtomicBool>,
+    ) -> Result<LlmStream, LlmError> {
         match self {
-            Self::OpenAiCompatible(p) => p.stream_chat(req).await,
-            Self::Anthropic(p) => p.stream_chat(req).await,
-            Self::Ollama(p) => p.stream_chat(req).await,
+            Self::OpenAiCompatible(p) => p.stream_chat(req, abort_flag).await,
+            Self::Anthropic(p) => p.stream_chat(req, abort_flag).await,
+            Self::Ollama(p) => p.stream_chat(req, abort_flag).await,
         }
     }
 }

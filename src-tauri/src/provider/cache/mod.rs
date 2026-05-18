@@ -1,13 +1,16 @@
+use once_cell::sync::OnceCell;
+use std::sync::Arc;
 use tracing::debug;
 
 use crate::provider::mcp_v2::error::{McpManagerError, Result};
+
+/// 全局 Cache 单例（使用 Arc 包装）
+static CACHE_INSTANCE: OnceCell<Arc<Cache>> = OnceCell::new();
 
 /// 通用键值缓存管理器
 ///
 /// 基于 sled 嵌入式数据库，内部使用 `Mutex` 包装确保线程安全。
 /// 存储原始字节（`Vec<u8>`），序列化/反序列化由调用方负责。
-///
-/// 单例模式：在 Tauri setup 中初始化一次，通过 `app.manage()` 注入全局状态。
 pub struct Cache {
     db: std::sync::Mutex<sled::Db>,
 }
@@ -21,6 +24,23 @@ impl Cache {
         Ok(Self {
             db: std::sync::Mutex::new(db),
         })
+    }
+
+    /// 设置全局单例（仅可在 Tauri setup 中调用一次）
+    pub fn set_global(cache: Cache) -> Result<Arc<Cache>> {
+        let arc = Arc::new(cache);
+        CACHE_INSTANCE
+            .set(arc.clone())
+            .map_err(|_| McpManagerError::CacheError("Cache global instance already set".to_string()))?;
+        Ok(arc)
+    }
+
+    /// 获取全局单例（必须在初始化后调用）
+    pub fn get_global() -> Result<Arc<Cache>> {
+        CACHE_INSTANCE
+            .get()
+            .cloned()
+            .ok_or_else(|| McpManagerError::CacheError("Cache not initialized".to_string()))
     }
 
     /// 存入键值对（覆盖已有记录）

@@ -22,9 +22,9 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(McpServeConfig::Config).text().not_null())
                     .col(
                         ColumnDef::new(McpServeConfig::UpdatedAt)
-                            .date_time()
+                            .integer()
                             .not_null()
-                            .default(SimpleExpr::Keyword(Keyword::CurrentTimestamp)),
+                            .default(0),
                     )
                     .to_owned(),
             )

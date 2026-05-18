@@ -25,6 +25,7 @@ impl HttpServer {
 
     /// 启动 HTTP 服务
     /// 端口为 0 时使用随机端口
+    #[allow(dead_code)]
     pub async fn start(&self, channel: Arc<WebhookChannel>, port: u16) -> Result<u16, String> {
         let mut handle_guard = self.handle.lock().await;
 
@@ -59,6 +60,7 @@ impl HttpServer {
     }
 
     /// 停止 HTTP 服务
+    #[allow(dead_code)]
     pub async fn stop(&self) {
         let mut handle_guard = self.handle.lock().await;
         if let Some(handle) = handle_guard.take() {
@@ -69,11 +71,13 @@ impl HttpServer {
     }
 
     /// 获取当前服务端口
+    #[allow(dead_code)]
     pub async fn port(&self) -> u16 {
         *self.port.lock().await
     }
 
     /// 检查服务是否正在运行
+    #[allow(dead_code)]
     pub async fn is_running(&self) -> bool {
         self.handle.lock().await.is_some()
     }

@@ -17,6 +17,7 @@ pub enum SchedulingPolicy {
 }
 
 /// 任务句柄
+#[allow(dead_code)]
 struct TaskHandle {
     cancel: Arc<AtomicBool>,
     join: JoinHandle<()>,
@@ -24,16 +25,19 @@ struct TaskHandle {
 }
 
 /// 轻量级调度器
+#[allow(dead_code)]
 pub struct Scheduler {
     tasks: Mutex<HashMap<String, TaskHandle>>,
     stopped: Arc<AtomicBool>,
 }
 
 /// 检查是否应该停止（cancel 或全局 stopped）
+#[allow(dead_code)]
 fn should_stop(cancel: &AtomicBool, stopped: &AtomicBool) -> bool {
     cancel.load(Ordering::Relaxed) || stopped.load(Ordering::Relaxed)
 }
 
+#[allow(dead_code)]
 impl Scheduler {
     pub fn new() -> Self {
         Self {

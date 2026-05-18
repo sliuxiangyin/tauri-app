@@ -17,13 +17,12 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
   isTauriRuntime,
-  LLM_LOCAL,
   streamLlmChat,
   type ChatMessagePayload,
 } from "@/lib/tauri-llm";
 import {
   IconAdjustmentsHorizontal,
-  IconTrash2,
+  IconTrash,
 } from "@tabler/icons-react";
 import { type ChatMessage } from "@/stores/useChatStore";
 import { type AccountInfo } from "@/lib/wechat-api";
@@ -122,7 +121,7 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
     if (!account) return;
 
     try {
-      const updated = await setChatModel(account.accountId, groupId, modelItem.model_id);
+      const updated = await setChatModel(account.accountId, groupId, modelItem.modelId);
       setCurrentModel(updated);
       setIsModelMenuOpen(false);
     } catch (e) {
@@ -181,7 +180,7 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
 
     setMessages((prev) => [...prev, userMessage]);
 
- 
+
 
     if (!isTauriRuntime()) {
       const stub: DemoMessage = {
@@ -199,17 +198,13 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
       { id: assistantId, role: "assistant", content: "" },
     ]);
 
-    const history: ChatMessagePayload[] = messagesRef.current
-      .filter((m) => m.role === "user" || m.role === "assistant")
-      .map((m) => ({ role: m.role, content: m.content }));
-
-    history.push({ role: "user", content: text });
-
     try {
       await streamLlmChat({
         accountId: account.accountId,
-        messages: history,
+        sessionId: "default",
+        messages: [{ role: "user" as const, content: text }],
         onChunk: (payload) => {
+          console.log("onChunk:", payload);
           if (payload.kind === "text_delta") {
             setMessages((prev) =>
               prev.map((m) =>
@@ -221,6 +216,7 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
           }
         },
         onStreamError: (payload) => {
+          console.log("onStreamError:", payload);
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantId
@@ -289,7 +285,7 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
               onClick={handleClearMessages}
               disabled={!account}
             >
-              <IconTrash2 className="size-4" />
+              <IconTrash className="size-4" />
             </Button>
             {/* 模型选择按钮 */}
             <Button
@@ -339,7 +335,7 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
                       <CommandItem
                         key={item.model_id}
                         className="mx-2 rounded-lg py-2.5"
-                        onSelect={() => handleModelSelect(group.id, item)}
+                      // onSelect={() => handleModelSelect(group.id, item)}
                       >
                         {item.model_name}
                       </CommandItem>
@@ -377,7 +373,7 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
           </Conversation>
         </div>
 
-        <ChatBox onUserSubmit={handleUserSubmit} />
+        <ChatBox accountId={account?.accountId} onUserSubmit={handleUserSubmit} />
       </div>
     </div>
   );

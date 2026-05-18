@@ -245,6 +245,7 @@ impl ServerManager {
     }
 
     /// 调用工具
+    #[allow(dead_code)]
     pub async fn call_tool(
         &self,
         server_id: &str,
@@ -262,6 +263,7 @@ impl ServerManager {
     }
 
     /// 获取所有已连接服务器的信息
+    #[allow(dead_code)]
     pub async fn list_servers(&self) -> Vec<McpServerConfig> {
         self.configs.read().await.values().cloned().collect()
     }
@@ -272,6 +274,7 @@ impl ServerManager {
     }
 
     /// 刷新指定服务器的工具缓存（强制从 MCP 服务器重新加载）
+    #[allow(dead_code)]
     pub async fn refresh_tools(&self, server_id: &str) -> Result<Vec<ToolWithSource>> {
         let connections = self.connections.read().await;
         let conn = connections
@@ -304,6 +307,7 @@ impl ServerManager {
     }
 
     /// 后台定期刷新所有服务器的工具缓存
+    #[allow(dead_code)]
     pub async fn refresh_all(&self) {
         let ids: Vec<String> = self.connections.read().await.keys().cloned().collect();
         for id in ids {
@@ -314,6 +318,7 @@ impl ServerManager {
     }
 
     /// 优雅关闭所有连接
+    #[allow(dead_code)]
     pub async fn shutdown(&self) {
         let mut connections = self.connections.write().await;
         for (id, conn) in connections.drain() {

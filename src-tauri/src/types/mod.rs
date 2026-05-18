@@ -2,4 +2,5 @@
 //!
 //! 按功能模块组织，与 services 层对应
 
+pub mod chat;
 pub mod chat_model;

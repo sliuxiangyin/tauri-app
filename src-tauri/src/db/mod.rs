@@ -1,4 +1,4 @@
-mod connection;
+pub mod connection;
 mod error;
 
 use std::sync::Arc;
@@ -29,6 +29,7 @@ impl DbState {
     }
 
     /// 直接从已有连接构造（仅用于测试场景）
+    #[allow(dead_code)]
     pub fn from_connection(db: DatabaseConnection) -> Self {
         Self {
             app: None,
@@ -51,6 +52,7 @@ impl DbState {
     }
 
     /// 获取内部引用（用于传递给需要 &DbState 的函数）
+    #[allow(dead_code)]
     pub fn inner(&self) -> &DbState {
         self
     }

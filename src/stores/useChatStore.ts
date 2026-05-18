@@ -180,7 +180,7 @@ export const useChatStore = create<ChatState>()(
       const { selectedAccount } = get()
 
       // 只处理当前选中的账号
-      if (selectedAccount?.account_id === account_id) {
+      if (selectedAccount?.accountId === account_id) {
         // 刷新消息列表以获取刚落库的消息
         get().loadMessages()
       }
@@ -196,7 +196,7 @@ export const useChatStore = create<ChatState>()(
       const { selectedAccount } = get()
 
       // 只处理当前选中的账号
-      if (selectedAccount?.account_id === account_id) {
+      if (selectedAccount?.accountId === account_id) {
         // 刷新消息列表以获取 LLM 回复
         get().loadMessages()
       }

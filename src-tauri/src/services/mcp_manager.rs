@@ -11,9 +11,8 @@ use tracing::{error, info};
 
 use crate::db::DbState;
 use crate::provider::cache::Cache;
-use crate::provider::mcp_v2::error::McpManagerError;
-use crate::provider::mcp_v2::{McpV2Api, McpV2State, ServerManager};
-use crate::services::mcp_service::{init_mcp_v2_with_api, McpServiceInitializer};
+use crate::provider::mcp_v2::McpV2Api;
+use crate::services::mcp_service::init_mcp_v2_with_api;
 
 /// MCP 服务管理器状态
 enum ManagerState {

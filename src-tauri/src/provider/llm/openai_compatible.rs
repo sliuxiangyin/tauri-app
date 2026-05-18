@@ -1,3 +1,7 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
 use async_openai::config::OpenAIConfig;
 use async_openai::types::chat::{
     ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
@@ -8,6 +12,7 @@ use async_openai::Client as OpenAiClient;
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures_util::StreamExt;
+use tokio::time::timeout;
 
 use super::error::LlmError;
 use super::provider_trait::{LlmProvider, LlmStream};
@@ -89,7 +94,11 @@ impl LlmProvider for OpenAiCompatible {
         Ok(content)
     }
 
-    async fn stream_chat(&self, req: ChatRequest) -> Result<LlmStream, LlmError> {
+    async fn stream_chat(
+        &self,
+        req: ChatRequest,
+        abort_flag: Arc<AtomicBool>,
+    ) -> Result<LlmStream, LlmError> {
         let messages = Self::convert_messages(&req.messages)?;
 
         let mut args = CreateChatCompletionRequestArgs::default();
@@ -110,19 +119,33 @@ impl LlmProvider for OpenAiCompatible {
 
         let s = try_stream! {
             futures_util::pin_mut!(stream);
-            while let Some(chunk) = stream.next().await {
-                let chunk = chunk.map_err(convert_error)?;
-                if let Some(choice) = chunk.choices.first() {
-                    if let Some(content) = &choice.delta.content {
-                        if !content.is_empty() {
-                            yield LlmStreamEvent::TextDelta {
-                                text: content.clone(),
-                            };
+            loop {
+                if abort_flag.load(Ordering::SeqCst) {
+                    yield LlmStreamEvent::Done;
+                    return;
+                }
+                match timeout(Duration::from_millis(200), stream.next()).await {
+                    Ok(Some(chunk)) => {
+                        let chunk = chunk.map_err(convert_error)?;
+                        if let Some(choice) = chunk.choices.first() {
+                            if let Some(content) = &choice.delta.content {
+                                if !content.is_empty() {
+                                    yield LlmStreamEvent::TextDelta {
+                                        text: content.clone(),
+                                    };
+                                }
+                            }
                         }
+                    }
+                    Ok(None) => {
+                        yield LlmStreamEvent::Done;
+                        return;
+                    }
+                    Err(_) => {
+                        // timeout: continue loop and check abort_flag
                     }
                 }
             }
-            yield LlmStreamEvent::Done;
         };
 
         Ok(Box::pin(s))

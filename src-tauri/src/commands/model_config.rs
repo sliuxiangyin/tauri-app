@@ -19,8 +19,8 @@ pub struct ProviderConfigDto {
     pub api_key: Option<String>,
     pub extra_json: Option<String>,
     pub sort_index: i32,
-    pub created_at: Option<String>,
-    pub updated_at: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,8 +173,8 @@ pub async fn create_provider_config(
         api_key: Set(payload.api_key),
         extra_json: Set(payload.extra_json),
         sort_index: Set(0),
-        created_at: Set(None),
-        updated_at: Set(None),
+        created_at: Set(chrono::Utc::now().timestamp()),
+        updated_at: Set(chrono::Utc::now().timestamp()),
     };
 
     let model = active.insert(&*db).await.map_err(|e| e.to_string())?;

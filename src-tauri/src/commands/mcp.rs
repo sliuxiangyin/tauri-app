@@ -126,7 +126,7 @@ pub async fn create_mcp_serve_config(
         id: NotSet,
         name: Set(payload.name),
         config: Set(config_json),
-        updated_at: Set(chrono::Utc::now()),
+        updated_at: Set(chrono::Utc::now().timestamp()),
     };
 
     let model = active.insert(&*db).await.map_err(|e| e.to_string())?;
@@ -173,7 +173,7 @@ pub async fn update_mcp_serve_config(
             serde_json::to_string(&config).map_err(|e| format!("config serialize error: {e}"))?;
         active.config = Set(config_json);
     }
-    active.updated_at = Set(chrono::Utc::now());
+    active.updated_at = Set(chrono::Utc::now().timestamp());
 
     let model = active.update(&*db).await.map_err(|e| e.to_string())?;
 

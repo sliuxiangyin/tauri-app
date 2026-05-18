@@ -10,6 +10,7 @@ use super::channel::WebhookChannel;
 use super::handler::{health_handler, webhook_handler};
 
 /// 创建路由
+#[allow(deprecated)]
 pub fn create_routes(channel: Arc<WebhookChannel>) -> Router {
     Router::new()
         .route("/webhook", post(webhook_handler))

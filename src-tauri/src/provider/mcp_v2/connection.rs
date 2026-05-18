@@ -50,6 +50,7 @@ impl McpConnection {
     }
 
     /// 强制刷新工具列表（绕过缓存）
+    #[allow(dead_code)]
     pub async fn refresh_tools(&self) -> Result<Vec<Tool>> {
         let tools =
             self.peer.list_all_tools().await.map_err(|e| {
@@ -63,6 +64,7 @@ impl McpConnection {
     }
 
     /// 调用工具
+    #[allow(dead_code)]
     pub async fn call_tool(&self, tool_name: &str, arguments: Value) -> Result<Value> {
         let params = match arguments {
             Value::Object(map) => {
@@ -85,6 +87,7 @@ impl McpConnection {
     }
 
     /// 清除内层工具缓存
+    #[allow(dead_code)]
     pub async fn clear_cache(&self) {
         *self.cached_tools.write().await = None;
         debug!("Tool cache cleared");

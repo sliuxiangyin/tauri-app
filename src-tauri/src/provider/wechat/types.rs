@@ -8,6 +8,7 @@ pub struct SendMessageRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SendMessageResponse {
     pub success: bool,
     pub message_id: String,
@@ -100,6 +101,7 @@ pub enum SseEvent {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct SseMessage {
     pub event_type: String,
     pub data: String,

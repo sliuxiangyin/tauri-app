@@ -22,11 +22,12 @@ pub enum McpDataError {
 }
 
 /// MCP 服务配置数据记录（带原始 Entity）
+#[allow(dead_code)]
 pub struct McpConfigRecord {
     pub id: i32,
     pub name: String,
     pub config: String,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: i64,
 }
 
 /// 获取所有 MCP 服务配置记录
@@ -53,6 +54,7 @@ pub async fn get_all_configs(db_state: &DbState) -> Result<Vec<McpConfigRecord>,
 }
 
 /// 获取单个 MCP 服务配置
+#[allow(dead_code)]
 pub async fn get_config_by_id(
     db_state: &DbState,
     id: i32,

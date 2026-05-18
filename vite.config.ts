@@ -33,8 +33,8 @@ export default defineConfig(async () => ({
           strict: false,
     },
     watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      // 3. tell Vite to ignore watching `src-tauri` and its subdirectories like `app-cache`
+      ignored: ["**/src-tauri/**", "**/src-tauri/app-cache/**"],
     },
   },
 }));

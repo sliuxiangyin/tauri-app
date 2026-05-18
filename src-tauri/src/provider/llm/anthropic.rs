@@ -1,7 +1,12 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
 use async_stream::try_stream;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde_json::{json, Value};
+use tokio::time::timeout;
 
 use super::error::LlmError;
 use super::provider_trait::{LlmProvider, LlmStream};
@@ -106,7 +111,11 @@ impl LlmProvider for AnthropicProvider {
         Ok(content)
     }
 
-    async fn stream_chat(&self, req: ChatRequest) -> Result<LlmStream, LlmError> {
+    async fn stream_chat(
+        &self,
+        req: ChatRequest,
+        abort_flag: Arc<AtomicBool>,
+    ) -> Result<LlmStream, LlmError> {
         let (system, msgs) = split_system(&req.messages);
         let max_tokens = req.max_tokens.unwrap_or(4096);
 
@@ -144,48 +153,62 @@ impl LlmProvider for AnthropicProvider {
         let s = try_stream! {
             let mut buf = String::new();
             futures_util::pin_mut!(bytes_stream);
-            while let Some(chunk) = bytes_stream.next().await {
-                let chunk = chunk.map_err(LlmError::Http)?;
-                buf.push_str(&String::from_utf8_lossy(&chunk));
-                loop {
-                    let idx = match buf.find('\n') {
-                        Some(i) => i,
-                        None => break,
-                    };
-                    let mut line = buf[..idx].to_string();
-                    if line.ends_with('\r') {
-                        line.pop();
-                    }
-                    buf.drain(..=idx);
+            loop {
+                if abort_flag.load(Ordering::SeqCst) {
+                    yield LlmStreamEvent::Done;
+                    return;
+                }
+                match timeout(Duration::from_millis(200), bytes_stream.next()).await {
+                    Ok(Some(chunk)) => {
+                        let chunk = chunk.map_err(LlmError::Http)?;
+                        buf.push_str(&String::from_utf8_lossy(&chunk));
+                        loop {
+                            let idx = match buf.find('\n') {
+                                Some(i) => i,
+                                None => break,
+                            };
+                            let mut line = buf[..idx].to_string();
+                            if line.ends_with('\r') {
+                                line.pop();
+                            }
+                            buf.drain(..=idx);
 
-                    let line = line.trim();
-                    if line.is_empty() {
-                        continue;
-                    }
-                    if !line.starts_with("data:") {
-                        continue;
-                    }
-                    let rest = line.strip_prefix("data:").map(str::trim).unwrap_or("");
-                    if rest.is_empty() {
-                        continue;
-                    }
-                    let v: Value = match serde_json::from_str(rest) {
-                        Ok(v) => v,
-                        Err(_) => continue,
-                    };
-                    let ty = v.get("type").and_then(|t| t.as_str());
-                    if ty == Some("content_block_delta") {
-                        if let Some(text) = v["delta"]["text"].as_str() {
-                            if !text.is_empty() {
-                                yield LlmStreamEvent::TextDelta {
-                                    text: text.to_string(),
-                                };
+                            let line = line.trim();
+                            if line.is_empty() {
+                                continue;
+                            }
+                            if !line.starts_with("data:") {
+                                continue;
+                            }
+                            let rest = line.strip_prefix("data:").map(str::trim).unwrap_or("");
+                            if rest.is_empty() {
+                                continue;
+                            }
+                            let v: Value = match serde_json::from_str(rest) {
+                                Ok(v) => v,
+                                Err(_) => continue,
+                            };
+                            let ty = v.get("type").and_then(|t| t.as_str());
+                            if ty == Some("content_block_delta") {
+                                if let Some(text) = v["delta"]["text"].as_str() {
+                                    if !text.is_empty() {
+                                        yield LlmStreamEvent::TextDelta {
+                                            text: text.to_string(),
+                                        };
+                                    }
+                                }
                             }
                         }
                     }
+                    Ok(None) => {
+                        yield LlmStreamEvent::Done;
+                        return;
+                    }
+                    Err(_) => {
+                        // timeout: continue loop and check abort_flag
+                    }
                 }
             }
-            yield LlmStreamEvent::Done;
         };
 
         Ok(Box::pin(s))

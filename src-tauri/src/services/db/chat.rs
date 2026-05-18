@@ -1,7 +1,6 @@
 //! 聊天消息数据库服务层
 //! 提供消息的 CRUD 操作接口
 
-use nanoid::nanoid;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder,
     QuerySelect, Set,
@@ -12,7 +11,7 @@ use crate::entity::ChatMessageEntity;
 
 /// 生成唯一 ID
 fn generate_id() -> String {
-    nanoid!(21)
+    uuid::Uuid::now_v7().to_string()
 }
 
 /// 消息 DTO（返回给前端）
@@ -58,7 +57,7 @@ impl From<ChatMessageModel> for MessageDto {
             attachments: model.attachments,
             status: model.status,
             token_usage: model.token_usage,
-            created_at: model.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+            created_at: model.created_at.to_string(),
             metadata: model.metadata,
             is_deleted: model.is_deleted,
         }
@@ -91,7 +90,7 @@ pub async fn get_messages(
         .filter(chat_message::Column::AccountId.eq(&account_id))
         .filter(chat_message::Column::SessionId.eq(&session_id))
         .filter(chat_message::Column::IsDeleted.eq("0"))
-        .order_by_desc(chat_message::Column::CreatedAt);
+        .order_by_asc(chat_message::Column::CreatedAt);
 
     if let Some(ct) = chat_type {
         query = query.filter(chat_message::Column::ChatType.eq(ct));
@@ -104,8 +103,7 @@ pub async fn get_messages(
         .await
         .map_err(|e| e.to_string())?;
 
-    let mut result: Vec<MessageDto> = messages.into_iter().map(MessageDto::from).collect();
-    result.reverse();
+    let result: Vec<MessageDto> = messages.into_iter().map(MessageDto::from).collect();
 
     Ok(result)
 }
@@ -115,8 +113,7 @@ pub async fn save_message(
     db: &DatabaseConnection,
     payload: CreateMessagePayload,
 ) -> Result<MessageDto, String> {
-    let now = chrono::Utc::now().naive_utc();
-
+    let now = chrono::Utc::now().timestamp();
     let active_model = ActiveModel {
         id: Set(generate_id()),
         account_id: Set(payload.account_id),
@@ -138,13 +135,12 @@ pub async fn save_message(
         metadata: Set(payload.metadata.unwrap_or_else(|| "{}".to_string())),
         is_deleted: Set("0".to_string()),
     };
-
     let model = active_model.insert(db).await.map_err(|e| e.to_string())?;
-
     Ok(MessageDto::from(model))
 }
 
 /// 删除消息（软删除）
+#[allow(dead_code)]
 pub async fn delete_message(db: &DatabaseConnection, message_id: String) -> Result<(), String> {
     let message = ChatMessageEntity::find_by_id(message_id.clone())
         .one(db)
@@ -160,6 +156,32 @@ pub async fn delete_message(db: &DatabaseConnection, message_id: String) -> Resu
     Ok(())
 }
 
+/// 更新消息内容和状态
+pub async fn update_message(
+    db: &DatabaseConnection,
+    message_id: String,
+    content: Option<String>,
+    status: Option<String>,
+) -> Result<MessageDto, String> {
+    let message = ChatMessageEntity::find_by_id(message_id.clone())
+        .one(db)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("message not found: {}", message_id))?;
+
+    let mut active_model: ActiveModel = message.into();
+
+    if let Some(c) = content {
+        active_model.content = Set(Some(c));
+    }
+    if let Some(s) = status {
+        active_model.status = Set(s);
+    }
+
+    let model = active_model.update(db).await.map_err(|e| e.to_string())?;
+    Ok(MessageDto::from(model))
+}
+
 /// 清空消息（硬删除所有指定账号/会话的消息）
 pub async fn clear_messages(
     db: &DatabaseConnection,
@@ -168,15 +190,6 @@ pub async fn clear_messages(
     chat_type: Option<String>,
 ) -> Result<u64, String> {
     let session_id = session_id.unwrap_or_else(|| "default".to_string());
-
-    let mut query = ChatMessageEntity::find()
-        .filter(chat_message::Column::AccountId.eq(&account_id))
-        .filter(chat_message::Column::SessionId.eq(&session_id));
-
-
-    if let Some(ref ct) = chat_type {
-        query = query.filter(chat_message::Column::ChatType.eq(ct));
-    }
 
     // 硬删除：使用 delete_many().filter().exec() 方式
     let mut delete_many = ChatMessageEntity::delete_many()
@@ -208,7 +221,6 @@ pub async fn clear_messages(
 /// 获取会话列表
 pub async fn get_sessions(db: &DatabaseConnection, account_id: String) -> Result<Vec<SessionDto>, String> {
     tracing::debug!("get_sessions: account_id = {}", account_id);
-
     let messages = ChatMessageEntity::find()
         .filter(chat_message::Column::AccountId.eq(&account_id))
         .filter(chat_message::Column::IsDeleted.eq("0"))
@@ -216,7 +228,6 @@ pub async fn get_sessions(db: &DatabaseConnection, account_id: String) -> Result
         .all(db)
         .await
         .map_err(|e| e.to_string())?;
-
     if messages.is_empty() {
         return Ok(vec![SessionDto {
             session_id: "default".to_string(),
@@ -225,14 +236,13 @@ pub async fn get_sessions(db: &DatabaseConnection, account_id: String) -> Result
             last_message_at: None,
         }]);
     }
-
     Ok(vec![SessionDto {
         session_id: "default".to_string(),
         name: "默认会话".to_string(),
         message_count: messages.len() as i64,
         last_message_at: messages
             .first()
-            .map(|m: &ChatMessageModel| m.created_at.format("%Y-%m-%d %H:%M:%S").to_string()),
+            .map(|m: &ChatMessageModel| m.created_at.to_string()),
     }])
 }
 

@@ -5,7 +5,7 @@
 use tauri::State;
 
 use crate::db::DbState;
-use crate::services::db::chat::{self, CreateMessagePayload, MessageDto, SessionDto};
+use crate::services::db::chat::{self, MessageDto, SessionDto};
 
 /// 获取消息列表
 #[tauri::command]
