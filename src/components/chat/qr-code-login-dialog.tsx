@@ -51,7 +51,6 @@ export const QRCodeLoginDialog: React.FC<QRCodeLoginDialogProps> = ({
 
     // 处理登录事件
     const handleEvent = (event: WechatLoginEvent) => {
-        console.log("Login event:", event);
         switch (event.event_type) {
             case 'qr_generated': {
                 const qrData = event.data.qrDataUrl;
@@ -93,8 +92,8 @@ export const QRCodeLoginDialog: React.FC<QRCodeLoginDialogProps> = ({
                 setStatus('expired');
                 setErrorMessage(event.data.message);
                 setRetryInfo({
-                    current: event.data.retry_count,
-                    max: event.data.max_retries,
+                    current: event.data.retryCount,
+                    max: event.data.maxRetries,
                 });
                 break;
             case 'error':
@@ -129,6 +128,7 @@ export const QRCodeLoginDialog: React.FC<QRCodeLoginDialogProps> = ({
                 handleError
             );
             unlistenRef.current = unlisten;
+            console.log("unlistenRef.current",unlistenRef.current);
         } catch (error) {
             console.error("Failed to start login stream:", error);
             setStatus('failed');
@@ -143,15 +143,13 @@ export const QRCodeLoginDialog: React.FC<QRCodeLoginDialogProps> = ({
         startLogin();
     };
 
-    // 组件挂载时启动登录流，卸载时清理资源
+    // open=true 启动登录流，open=false 清理资源
     useEffect(() => {
         if (open) {
             startLogin();
-        }
-
-        return () => {
+        } else {
             cleanup();
-        };
+        }
     }, [open]);
 
     // 将 SVG 字符串插入 DOM

@@ -7,9 +7,9 @@ import { useTabStore } from "@/stores/useTabStore.ts";
 import { useEffect } from "react";
 
 function MainPage() {
+
     const currentTab = useTabStore((state) => state.currentTab);
     useEffect(() => {
-        console.log("Main 监听到选项卡变化：", currentTab);
     }, [currentTab]);
     return (
         <div className="flex h-full w-full flex-col overflow-hidden">

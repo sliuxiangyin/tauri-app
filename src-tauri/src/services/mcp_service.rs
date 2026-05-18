@@ -13,8 +13,10 @@ use std::sync::Arc;
 
 /// MCP v2 服务初始化器
 pub struct McpServiceInitializer {
+    #[allow(dead_code)]
     manager: Option<Arc<ServerManager>>,
     api: Option<McpV2Api>,
+    #[allow(dead_code)]
     initialized: bool,
 }
 
@@ -29,6 +31,7 @@ impl McpServiceInitializer {
     }
 
     /// 执行完整的初始化流程
+    #[allow(dead_code)]
     pub async fn initialize(
         &mut self,
         db_state: &crate::db::DbState,
@@ -66,16 +69,19 @@ impl McpServiceInitializer {
     }
 
     /// 获取 API 引用（仅在初始化后有效）
+    #[allow(dead_code)]
     pub fn get_api(&self) -> Option<&McpV2Api> {
         self.api.as_ref()
     }
 
     /// 检查是否已初始化
+    #[allow(dead_code)]
     pub fn is_initialized(&self) -> bool {
         self.initialized
     }
 
     /// 获取 Manager 引用
+    #[allow(dead_code)]
     pub fn get_manager(&self) -> Option<Arc<ServerManager>> {
         self.manager.clone()
     }
@@ -87,36 +93,18 @@ impl Default for McpServiceInitializer {
     }
 }
 
-/// 异步初始化 MCP v2 服务（兼容现有 API）
-pub async fn init_mcp_v2(
-    db_state: &crate::db::DbState,
-    cache: Arc<Cache>,
-) -> Result<Arc<ServerManager>, Box<dyn std::error::Error + Send + Sync>> {
-    // 创建临时初始化器
-    let mut initializer = McpServiceInitializer::new();
-
-    // 执行初始化
-    let api = initializer.initialize(db_state, cache).await?;
-
-    // 返回 Manager 供外部使用
-    initializer
-        .get_manager()
-        .ok_or_else(|| "Failed to get manager".into())
-}
 
 /// 初始化并返回 API（推荐使用）
+#[allow(dead_code)]
 pub async fn init_mcp_v2_with_api(
     db_state: &crate::db::DbState,
     cache: Arc<Cache>,
 ) -> Result<McpV2Api, McpManagerError> {
-    let mut initializer = McpServiceInitializer::new();
-    let api_ref = initializer.initialize(db_state, cache).await?;
-    // McpV2Api 未实现 Clone，需要重构初始化器来持有它
-    // 这里从初始化器中取出
-    initializer
-        .api
-        .take()
-        .ok_or_else(|| McpManagerError::Internal {
-            message: "MCP service initialized but API is None".into(),
-        })
+    let configs = mcp_db::records_to_server_configs(
+        mcp_db::get_all_configs(db_state).await
+            .map_err(|e| McpManagerError::Internal { message: e.to_string() })?
+    );
+    let manager = ServerManager::new(configs, cache).await
+        .map_err(|e| McpManagerError::Internal { message: e.to_string() })?;
+    Ok(McpV2Api::new(Arc::new(manager)))
 }

@@ -98,8 +98,6 @@ export default function ChatShell() {
   const messages = useChatStore((s) => s.messages);
   const isLoading = useChatStore((s) => s.isLoading);
   useEffect(() => {
-    console.log("messages", messages);
-    console.log("isLoading", isLoading);
   }, [isLoading]);
   return (
     <SidebarProvider

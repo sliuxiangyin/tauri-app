@@ -4,6 +4,7 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 import { listen } from '@tauri-apps/api/event'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import type { AccountInfo } from '@/lib/wechat-api'
+import { getMessages } from '@/lib/chat-api'
 
 // 简化的存储实现：使用 localStorage（支持 session 持久化）
 // 如果需要更安全的存储（如加密），未来可以切换到 @tauri-apps/plugin-store
@@ -103,11 +104,7 @@ export const useChatStore = create<ChatState>()(
     // 短暂延迟确保 UI 能感知到加载状态
     await new Promise(r => setTimeout(r, 300))
     try {
-      const { invoke } = await import('@tauri-apps/api/core')
-      const msgs = await invoke<ChatMessage[]>('get_messages', {
-        accountId: selectedAccount.accountId,
-        sessionId: 'default',
-      })
+      const msgs = await getMessages(selectedAccount.accountId, 'default')
       set({ messages: msgs, isLoading: false })
     } catch (error) {
       console.error('加载消息失败:', error)
@@ -159,7 +156,7 @@ export const useChatStore = create<ChatState>()(
   persistSelectedAccount: async (account: AccountInfo) => {
     // 注意：账号现在通过 zustand persist middleware 自动持久化
     // 这个方法保留但不再需要手动调用
-    console.log('[persistSelectedAccount] 账号已自动持久化:', account.accountId)
+    console.log('[persistSelectedAccount] 账号已自动持久化:', account.account_id)
   },
 
   // 初始化 Webhook 消息监听
@@ -183,7 +180,7 @@ export const useChatStore = create<ChatState>()(
       const { selectedAccount } = get()
 
       // 只处理当前选中的账号
-      if (selectedAccount?.accountId === account_id) {
+      if (selectedAccount?.account_id === account_id) {
         // 刷新消息列表以获取刚落库的消息
         get().loadMessages()
       }
@@ -199,7 +196,7 @@ export const useChatStore = create<ChatState>()(
       const { selectedAccount } = get()
 
       // 只处理当前选中的账号
-      if (selectedAccount?.accountId === account_id) {
+      if (selectedAccount?.account_id === account_id) {
         // 刷新消息列表以获取 LLM 回复
         get().loadMessages()
       }

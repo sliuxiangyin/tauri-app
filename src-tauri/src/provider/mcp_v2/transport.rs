@@ -1,5 +1,4 @@
 use rmcp::service::{RoleClient, RunningService};
-use rmcp::Service;
 use tracing::info;
 
 use crate::provider::mcp_v2::config::TransportConfig;

@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SendMessageRequest {
     pub account_id: String,
     pub to: String,
@@ -9,7 +8,6 @@ pub struct SendMessageRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SendMessageResponse {
     pub success: bool,
     pub message_id: String,
@@ -44,12 +42,12 @@ pub struct QrGeneratedData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ScannedData {
     pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct QrExpiredData {
     pub retry_count: u32,
     pub max_retries: u32,
@@ -63,7 +61,7 @@ pub struct ConfirmedData {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)] 
 #[serde(rename_all = "camelCase")]
 pub struct LoginSuccessData {
     pub account_id: String,
@@ -71,11 +69,13 @@ pub struct LoginSuccessData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LoginFailedData {
     pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ErrorData {
     pub message: String,
 }

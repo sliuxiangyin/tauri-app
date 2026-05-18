@@ -63,6 +63,7 @@ impl McpServiceManager {
     }
 
     /// 等待初始化完成
+    #[allow(dead_code)]
     pub async fn wait_ready(&self, timeout: std::time::Duration) -> Result<(), String> {
         let state = self.state.read().await;
         match &*state {
@@ -123,11 +124,13 @@ impl McpServiceManager {
     }
 
     /// 检查是否已就绪
+    #[allow(dead_code)]
     pub async fn is_ready(&self) -> bool {
         matches!(*self.state.read().await, ManagerState::Ready(_))
     }
 
     /// 获取错误信息（如果初始化失败）
+    #[allow(dead_code)]
     pub async fn get_error(&self) -> Option<String> {
         match &*self.state.read().await {
             ManagerState::Failed(msg) => Some(msg.clone()),
@@ -150,6 +153,7 @@ impl McpServiceManager {
 }
 
 /// 便捷函数：创建带初始化的管理器
+#[allow(dead_code)]
 pub async fn create_manager(db_state: &DbState, cache: Arc<Cache>) -> Arc<McpServiceManager> {
     let manager = Arc::new(McpServiceManager::new());
     let db_state = db_state.clone();
@@ -167,4 +171,5 @@ pub async fn create_manager(db_state: &DbState, cache: Arc<Cache>) -> Arc<McpSer
 /// 简化版：用于替换 lib.rs 中的 McpV2State
 ///
 /// 提供更好的错误处理和状态查询
+#[allow(dead_code)]
 pub type ManagedMcpState = Arc<McpServiceManager>;

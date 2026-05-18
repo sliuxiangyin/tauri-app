@@ -92,7 +92,6 @@ impl MessageStatus {
 /// 聊天消息实体模型
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
 #[sea_orm(table_name = "messages")]
-#[serde(rename_all = "camelCase")]
 pub struct Model {
     #[sea_orm(primary_key)]
     pub id: String,
@@ -196,7 +195,6 @@ pub struct MessageQueryOptions {
 
 /// 创建消息的负载
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct CreateMessagePayload {
     pub account_id: String,
     pub chat_type: String,

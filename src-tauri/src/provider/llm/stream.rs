@@ -8,18 +8,18 @@ pub enum LlmStreamEvent {
     Done,
 }
 
-/// 推送到前端的 `llm:chunk` 载荷：固定带 `stream_id`，便于 `listen` 里过滤并发请求。
+/// 推送到前端的 `llm:chunk` 载荷：固定带 `account_id`，便于 `listen` 里按账号过滤。
 #[derive(Debug, Clone, Serialize)]
 pub struct LlmChunkEnvelope {
-    pub stream_id: String,
+    pub account_id: String,
     #[serde(flatten)]
     pub event: LlmStreamEvent,
 }
 
 impl LlmChunkEnvelope {
-    pub fn new(stream_id: impl Into<String>, event: LlmStreamEvent) -> Self {
+    pub fn new(account_id: impl Into<String>, event: LlmStreamEvent) -> Self {
         Self {
-            stream_id: stream_id.into(),
+            account_id: account_id.into(),
             event,
         }
     }

@@ -23,11 +23,31 @@ import {
 } from "@/lib/tauri-llm";
 import {
   IconAdjustmentsHorizontal,
-  IconRefresh,
+  IconTrash2,
 } from "@tabler/icons-react";
 import { type ChatMessage } from "@/stores/useChatStore";
 import { type AccountInfo } from "@/lib/wechat-api";
 import { invoke } from "@tauri-apps/api/core";
+import { clearMessages } from "@/lib/chat-api";
+import {
+  getChatModel,
+  getAllChatModels,
+  setChatModel,
+  type AccountModelDto,
+  type ModelGroup,
+} from "@/lib/chat-model-api";
+import {
+  Dialog,
+  DialogContent,
+} from "@/components/ui/dialog";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
 
 // Props 接口
 interface Ai05Props {
@@ -58,6 +78,71 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
   const [messages, setMessages] = useState<DemoMessage[]>(INITIAL_MESSAGES);
   const messagesRef = useRef<DemoMessage[]>(messages);
   messagesRef.current = messages;
+
+  // 模型选择相关状态
+  const [currentModel, setCurrentModel] = useState<AccountModelDto | null>(null);
+  const [modelGroups, setModelGroups] = useState<ModelGroup[]>([]);
+  const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
+  const [isLoadingModel, setIsLoadingModel] = useState(false);
+
+  // 加载当前模型
+  useEffect(() => {
+    if (!account) {
+      setCurrentModel(null);
+      return;
+    }
+    setIsLoadingModel(true);
+    getChatModel(account.accountId)
+      .then((model) => {
+        setCurrentModel(model);
+      })
+      .catch((e) => {
+        console.error("获取当前模型失败:", e);
+        setCurrentModel(null);
+      })
+      .finally(() => {
+        setIsLoadingModel(false);
+      });
+  }, [account]);
+
+  // 加载所有模型列表
+  useEffect(() => {
+    getAllChatModels()
+      .then((groups) => {
+        setModelGroups(groups);
+      })
+      .catch((e) => {
+        console.error("获取模型列表失败:", e);
+        setModelGroups([]);
+      });
+  }, []);
+
+  // 选择模型处理
+  const handleModelSelect = async (groupId: string, modelItem: { modelId: string; modelName: string }) => {
+    if (!account) return;
+
+    try {
+      const updated = await setChatModel(account.accountId, groupId, modelItem.model_id);
+      setCurrentModel(updated);
+      setIsModelMenuOpen(false);
+    } catch (e) {
+      console.error("设置模型失败:", e);
+    }
+  };
+
+  // 清空消息处理
+  const handleClearMessages = async () => {
+    if (!account) return;
+    if (!confirm("确定要清空当前会话的所有消息吗？")) return;
+
+    try {
+      await clearMessages(account.accountId, "default");
+      // 清空本地消息状态
+      setMessages(INITIAL_MESSAGES);
+    } catch (e) {
+      console.error("清空消息失败:", e);
+    }
+  };
 
   // 当 store 中的消息变化时，更新本地消息
   useEffect(() => {
@@ -96,20 +181,7 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
 
     setMessages((prev) => [...prev, userMessage]);
 
-    // 保存用户消息到数据库
-    try {
-      await invoke('save_message', {
-        payload: {
-          accountId: account.accountId,
-          chatType: 'client',
-          sessionId: 'default',
-          role: 'user',
-          content: text,
-        },
-      });
-    } catch (e) {
-      console.error('保存用户消息失败:', e);
-    }
+ 
 
     if (!isTauriRuntime()) {
       const stub: DemoMessage = {
@@ -133,18 +205,10 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
 
     history.push({ role: "user", content: text });
 
-    const streamId = crypto.randomUUID();
-    const provider = LLM_LOCAL.provider;
-
     try {
       await streamLlmChat({
-        streamId,
-        provider,
-        req: {
-          messages: history,
-          model: LLM_LOCAL.model,
-          temperature: LLM_LOCAL.temperature,
-        },
+        accountId: account.accountId,
+        messages: history,
         onChunk: (payload) => {
           if (payload.kind === "text_delta") {
             setMessages((prev) =>
@@ -173,8 +237,8 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
               await invoke('save_message', {
                 payload: {
                   accountId: account.accountId,
-                  chatType: 'client',
-                  sessionId: 'default',
+                  chat_type: 'client',
+                  session_id: 'default',
                   role: 'assistant',
                   content: finalMessage.content,
                 },
@@ -220,15 +284,72 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
               size="icon"
               variant="ghost"
               className="size-8"
-              aria-label="Refresh"
-              title="Refresh"
+              aria-label="清空消息"
+              title="清空消息"
+              onClick={handleClearMessages}
+              disabled={!account}
             >
-              <IconRefresh className="size-4" />
+              <IconTrash2 className="size-4" />
             </Button>
-            {/* 模型选择 */}
-          
+            {/* 模型选择按钮 */}
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1.5 text-xs font-normal"
+              onClick={() => setIsModelMenuOpen(true)}
+              disabled={isLoadingModel || !account}
+            >
+              <IconAdjustmentsHorizontal className="size-3.5" />
+              <span className="max-w-[100px] truncate">
+                {isLoadingModel
+                  ? "加载中..."
+                  : currentModel?.display_name || currentModel?.model_name || "暂无模型"}
+              </span>
+            </Button>
           </div>
         </header>
+
+        {/* 模型选择命令菜单 */}
+        <Dialog open={isModelMenuOpen} onOpenChange={setIsModelMenuOpen}>
+          <DialogContent
+            className="gap-0 overflow-hidden rounded-xl border-border/50 p-0 shadow-lg sm:max-w-lg"
+            showCloseButton={false}
+          >
+            <Command className="flex h-full w-full flex-col overflow-hidden bg-popover **:data-[slot=command-input-wrapper]:h-auto **:data-[slot=command-input-wrapper]:grow **:data-[slot=command-input-wrapper]:border-0 **:data-[slot=command-input-wrapper]:px-0">
+              <div className="flex h-12 items-center gap-2 border-border/50 border-b px-4">
+                <CommandInput
+                  className="h-10 text-[15px]"
+                  placeholder="搜索模型..."
+                />
+                <button
+                  className="flex shrink-0 items-center"
+                  onClick={() => setIsModelMenuOpen(false)}
+                  type="button"
+                >
+                  <kbd className="rounded border bg-muted px-1.5 py-0.5 text-[10px] font-medium">Esc</kbd>
+                </button>
+              </div>
+
+              <CommandList className="max-h-[400px] py-2">
+                <CommandEmpty>暂无可用模型</CommandEmpty>
+
+                {modelGroups.map((group) => (
+                  <CommandGroup key={group.id} heading={group.name}>
+                    {group.items.map((item) => (
+                      <CommandItem
+                        key={item.model_id}
+                        className="mx-2 rounded-lg py-2.5"
+                        onSelect={() => handleModelSelect(group.id, item)}
+                      >
+                        {item.model_name}
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                ))}
+              </CommandList>
+            </Command>
+          </DialogContent>
+        </Dialog>
 
         <div className="min-h-0 flex-1 overflow-hidden">
           <Conversation className="h-full min-h-0 flex-1 bg-muted/30">

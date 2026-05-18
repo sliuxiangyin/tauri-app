@@ -6,28 +6,19 @@
 //! - 调用 LLM 处理微信消息
 //! - 回复微信
 
-use nanoid::nanoid;
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set};
+use crate::services::db::chat::save_message;
 use serde_json::json;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_notification::{NotificationExt, PermissionState};
 
 use crate::db::DbState;
-use crate::entity::chat_message::{ActiveModel, Model as ChatMessageModel};
-use crate::entity::model_provider_config as mpc;
-use crate::provider::llm::{
-    provider_trait::LlmProvider,
-    types::{ChatMessage as LlmChatMessage, ChatRequest, ProviderConfigPayload, Role},
-    Provider,
-};
+use crate::entity::chat_message::CreateMessagePayload;
+use crate::provider::cache::Cache;
+use crate::provider::llm::types::{ChatMessage as LlmChatMessage, Role};
+use crate::services::llm_service::{stream_chat, ChatMessage};
 use crate::provider::server::WebhookChannel;
 use crate::provider::wechat::{SendMessageRequest, WechatClient};
-
-/// 生成唯一 ID
-fn generate_id() -> String {
-    nanoid!(21)
-}
 
 /// 启动微信消息监听服务
 /// 在后台持续从 broadcast 通道接收消息，执行以下操作：
@@ -41,6 +32,7 @@ pub async fn start_wechat_message_service(
     db_state: DbState,
     channel: Arc<WebhookChannel>,
     wechat_client: WechatClient,
+    cache: Arc<Cache>,
 ) {
     let mut rx = channel.subscribe();
 
@@ -72,8 +64,21 @@ pub async fn start_wechat_message_service(
         // 3. 推送给前端
         let _ = app.emit("wechat:message", &json!(payload));
 
-        // 4. 调用 LLM 获取回复
-        match call_llm(&db_state, &account_id, &body).await {
+        // 4. 调用 LLM 获取回复（流式）
+        let system_prompt = "你是一个智能助手，请简洁地回复用户的消息。";
+        let user_message = ChatMessage {
+            role: Role::User,
+            content: body.clone(),
+        };
+
+        match stream_chat(
+            app.clone(),
+            cache.clone(),
+            &db_state,
+            &account_id,
+            vec![user_message],
+            Some(system_prompt),
+        ).await {
             Ok(reply) => {
                 println!("[WechatMessageService] LLM 回复: {}", reply);
 
@@ -111,33 +116,26 @@ async fn save_wechat_message(
     db_state: &DbState,
     account_id: &str,
     content: &str,
-) -> Result<ChatMessageModel, String> {
+) -> Result<crate::services::db::chat::MessageDto, String> {
     let db = db_state.get().await.map_err(|e| e.to_string())?;
-    let now = chrono::Utc::now().naive_utc();
 
-    let active_model = ActiveModel {
-        id: Set(generate_id()),
-        account_id: Set(account_id.to_string()),
-        chat_type: Set("wechat".to_string()),
-        session_id: Set("default".to_string()),
-        parent_message_id: Set(None),
-        role: Set("user".to_string()),
-        content: Set(Some(content.to_string())),
-        content_summary: Set(None),
-        thinking: Set(None),
-        tool_calls: Set(None),
-        tool_call_id: Set(None),
-        tool_output: Set(None),
-        extends: Set("{}".to_string()),
-        attachments: Set(None),
-        status: Set("completed".to_string()),
-        token_usage: Set(None),
-        created_at: Set(now),
-        metadata: Set("{}".to_string()),
-        is_deleted: Set("0".to_string()),
+    let payload = CreateMessagePayload {
+        account_id: account_id.to_string(),
+        chat_type: "wechat".to_string(),
+        session_id: "default".to_string(),
+        role: "user".to_string(),
+        content: content.to_string(),
+        parent_message_id: None,
+        thinking: None,
+        tool_calls: None,
+        tool_call_id: None,
+        tool_output: None,
+        extends: Some("{}".to_string()),
+        status: Some("completed".to_string()),
+        metadata: Some("{}".to_string()),
     };
 
-    active_model.insert(&*db).await.map_err(|e| e.to_string())
+    save_message(&db, payload).await
 }
 
 /// 发送系统通知
@@ -186,110 +184,29 @@ async fn send_reply_to_wechat(
     Ok(())
 }
 
-/// 从数据库获取启用的 LLM 提供者配置
-async fn get_enabled_provider(
-    db_state: &DbState,
-) -> Result<(ProviderConfigPayload, String), String> {
-    let db = db_state.get().await.map_err(|e| e.to_string())?;
-
-    // 查询启用的提供商配置
-    let provider = mpc::Entity::find()
-        .filter(mpc::Column::Enabled.eq(1))
-        .order_by_asc(mpc::Column::SortIndex)
-        .one(&*db)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "未找到启用的 LLM 提供商配置".to_string())?;
-
-    // 构建 ProviderConfigPayload
-    let config = match provider.provider_kind.as_str() {
-        "open_ai" | "openai_compatible" => ProviderConfigPayload::OpenAiCompatible {
-            base_url: provider.api_base_url,
-            api_key: provider.api_key.unwrap_or_default(),
-        },
-        "anthropic" => ProviderConfigPayload::Anthropic {
-            api_key: provider.api_key.unwrap_or_default(),
-        },
-        "ollama" => ProviderConfigPayload::Ollama {
-            base_url: provider.api_base_url,
-        },
-        _ => {
-            return Err(format!("不支持的提供商类型: {}", provider.provider_kind));
-        }
-    };
-
-    Ok((config, provider.display_name))
-}
-
-/// 调用 LLM 获取回复（使用非流式 API）
-async fn call_llm(
-    db_state: &DbState,
-    _account_id: &str,
-    user_message: &str,
-) -> Result<String, String> {
-    let (provider_config, _provider_name) = get_enabled_provider(db_state).await?;
-
-    // 构建聊天请求
-    let req = ChatRequest {
-        messages: vec![
-            LlmChatMessage {
-                role: Role::System,
-                content: "你是一个智能助手，请简洁地回复用户的消息。".to_string(),
-            },
-            LlmChatMessage {
-                role: Role::User,
-                content: user_message.to_string(),
-            },
-        ],
-        model: "".to_string(), // 非流式调用时会忽略这个
-        temperature: 0.8,
-        max_tokens: None,
-    };
-
-    // 使用 Provider 发送非流式请求
-    let provider = Provider::try_from(provider_config).map_err(|e| e.to_string())?;
-    let reply = provider
-        .send_message(req)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if reply.is_empty() {
-        return Err("LLM 返回空回复".to_string());
-    }
-
-    Ok(reply)
-}
-
 /// 保存 LLM 回复到数据库
 async fn save_llm_reply(
     db_state: &DbState,
     account_id: &str,
     content: &str,
-) -> Result<ChatMessageModel, String> {
+) -> Result<crate::services::db::chat::MessageDto, String> {
     let db = db_state.get().await.map_err(|e| e.to_string())?;
-    let now = chrono::Utc::now().naive_utc();
 
-    let active_model = ActiveModel {
-        id: Set(generate_id()),
-        account_id: Set(account_id.to_string()),
-        chat_type: Set("wechat".to_string()),
-        session_id: Set("default".to_string()),
-        parent_message_id: Set(None),
-        role: Set("assistant".to_string()),
-        content: Set(Some(content.to_string())),
-        content_summary: Set(None),
-        thinking: Set(None),
-        tool_calls: Set(None),
-        tool_call_id: Set(None),
-        tool_output: Set(None),
-        extends: Set("{}".to_string()),
-        attachments: Set(None),
-        status: Set("completed".to_string()),
-        token_usage: Set(None),
-        created_at: Set(now),
-        metadata: Set("{}".to_string()),
-        is_deleted: Set("0".to_string()),
+    let payload = CreateMessagePayload {
+        account_id: account_id.to_string(),
+        chat_type: "wechat".to_string(),
+        session_id: "default".to_string(),
+        role: "assistant".to_string(),
+        content: content.to_string(),
+        parent_message_id: None,
+        thinking: None,
+        tool_calls: None,
+        tool_call_id: None,
+        tool_output: None,
+        extends: Some("{}".to_string()),
+        status: Some("completed".to_string()),
+        metadata: Some("{}".to_string()),
     };
 
-    active_model.insert(&*db).await.map_err(|e| e.to_string())
+    save_message(&db, payload).await
 }

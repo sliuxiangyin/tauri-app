@@ -13,6 +13,8 @@ use std::sync::Arc;
 pub struct FirstEnabledModel {
     pub config_id: String,
     pub model_id: String,
+    pub model_name: String,
+    pub display_name: String,
     pub payload: ProviderConfigPayload,
 }
 
@@ -49,10 +51,12 @@ pub async fn get_first_enabled_model(
     
     let first_model = sorted_models.into_iter().next();
 
-    let (config_id, model_id) = match first_model {
-        Some(m) => (config_model.id.clone(), m.model_id.clone()),
+    let (config_id, model_id, model_name) = match first_model {
+        Some(m) => (config_model.id.clone(), m.model_id.clone(), m.model_name.clone()),
         None => return Ok(None),
     };
+
+    let display_name = config_model.display_name.clone();
 
     // 构建 ProviderConfigPayload
     let payload = match config_model.provider_kind.as_str() {
@@ -74,6 +78,8 @@ pub async fn get_first_enabled_model(
     Ok(Some(FirstEnabledModel {
         config_id,
         model_id,
+        model_name,
+        display_name,
         payload,
     }))
 }
@@ -112,12 +118,12 @@ pub async fn get_model_by_ids(
         .into_iter()
         .find(|m| m.model_id == model_id);
 
-    let model_id_owned = matching_model.map(|m| m.model_id);
-
-    let model_id_owned = match model_id_owned {
-        Some(id) => id,
+    let (model_id_owned, model_name) = match matching_model {
+        Some(m) => (m.model_id.clone(), m.model_name.clone()),
         None => return Ok(None),
     };
+
+    let display_name = config_model.display_name.clone();
 
     // 构建 ProviderConfigPayload
     let payload = match config_model.provider_kind.as_str() {
@@ -139,6 +145,8 @@ pub async fn get_model_by_ids(
     Ok(Some(FirstEnabledModel {
         config_id: config_id.to_string(),
         model_id: model_id_owned,
+        model_name,
+        display_name,
         payload,
     }))
 }

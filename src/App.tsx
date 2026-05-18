@@ -25,3 +25,7 @@ function App() {
 }
 
 export default App;
+
+function testTauriSerialization() {
+  throw new Error("Function not implemented.");
+}

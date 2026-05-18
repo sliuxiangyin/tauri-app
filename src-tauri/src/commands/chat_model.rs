@@ -6,20 +6,21 @@
 
 use crate::db::DbState;
 use crate::provider::cache::Cache;
-use crate::provider::llm::types::ProviderConfigPayload;
-use crate::services::chat_model_service::{AccountModelSelection, ChatModelService};
+use crate::services::chat_model_service::ChatModelService;
+use crate::services::chat_model_service as chat_model_service;
 use crate::services::db::chat_model as chat_model_db;
+use crate::types::chat_model::{AccountModelSelection, ModelGroup};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::State;
 
 /// 账户模型信息 DTO（返回给前端）
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct AccountModelDto {
     pub config_id: String,
+    pub display_name: String,
     pub model_id: String,
-    pub provider_payload: ProviderConfigPayload,
+    pub model_name: String,
     pub is_default: bool,
 }
 
@@ -51,8 +52,9 @@ pub async fn set_chat_model(
     match model_info {
         Some(info) => Ok(AccountModelDto {
             config_id,
+            display_name: info.display_name,
             model_id,
-            provider_payload: info.payload,
+            model_name: info.model_name,
             is_default: false,
         }),
         None => Err("model not found".to_string()),
@@ -85,8 +87,9 @@ pub async fn get_chat_model(
             match model_info {
                 Some(info) => Ok(AccountModelDto {
                     config_id: selection.config_id,
+                    display_name: info.display_name,
                     model_id: selection.model_id,
-                    provider_payload: info.payload,
+                    model_name: info.model_name,
                     is_default: false,
                 }),
                 None => Err("saved model not found".to_string()),
@@ -102,12 +105,21 @@ pub async fn get_chat_model(
             match model_info {
                 Some(info) => Ok(AccountModelDto {
                     config_id: info.config_id,
+                    display_name: info.display_name,
                     model_id: info.model_id,
-                    provider_payload: info.payload,
+                    model_name: info.model_name,
                     is_default: true,
                 }),
                 None => Err("no enabled model found".to_string()),
             }
         }
     }
+}
+
+/// 获取所有模型列表（按配置分组）
+#[tauri::command]
+pub async fn get_all_chat_models(
+    db_state: State<'_, DbState>,
+) -> Result<Vec<ModelGroup>, String> {
+    chat_model_service::get_all_models_grouped(&db_state).await
 }

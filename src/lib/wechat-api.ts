@@ -17,18 +17,18 @@ export interface ScannedData {
 }
 
 export interface QrExpiredData {
-  retry_count: number;
-  max_retries: number;
+  retryCount: number;
+  maxRetries: number;
   message: string;
 }
 
 export interface ConfirmedData {
-  account_id: string;
+  accountId: string;
   message: string;
 }
 
 export interface LoginSuccessData {
-  account_id: string;
+  accountId: string;
   message: string;
 }
 
@@ -57,7 +57,7 @@ export interface SendMessageRequest {
 
 export interface SendMessageResponse {
   success: boolean;
-  messageId: string;
+  message_id: string;
   channel: string;
 }
 
@@ -70,14 +70,14 @@ export interface AccountInfo {
 
 export interface AccountsResponse {
   success: boolean;
-  accountIds: string[];
+  account_ids: string[];
   accounts: AccountInfo[];
   count: number;
-  runningCount: number;
+  running_count: number;
 }
 
 export interface LoginError {
-  accountId: string;
+  account_id: string;
   message: string;
 }
 
@@ -87,18 +87,18 @@ export interface WebhookMessage {
   body: string;
   from: string;
   to: string;
-  accountId: string;
-  originatingChannel: string;
-  originatingTo: string;
-  messageSid: string;
+  account_id: string;
+  originating_channel: string;
+  originating_to: string;
+  message_sid: string;
   timestamp: number;
   provider: string;
-  chatType: string;
-  contextToken: string;
-  mediaPath?: string;
-  mediaType?: string;
-  commandBody: string;
-  commandAuthorized: boolean;
+  chat_type: string;
+  context_token: string;
+  media_path?: string;
+  media_type?: string;
+  command_body: string;
+  command_authorized: boolean;
 }
 
 // ============ API 封装 ============
@@ -133,12 +133,14 @@ export async function startLoginStream(
     }
   });
 
-  // 调用后端命令启动登录流
-  await invoke('wechat_login_stream', { accountId: accountId });
+  // Fire-and-forget: 不 await，直接在后台启动 SSE 流
+  // 这样 unlisten 函数能立即返回，组件可以正常管理生命周期
+  invoke('wechat_login_stream', { accountId }).catch((e) => {
+    console.warn('wechat_login_stream invoke error:', e);
+  });
 
-  // 返回取消监听函数
+  // 立即返回取消监听函数
   return async () => {
-    console.log('[startLoginStream] cleanup called, invoking cancel');
     // 先调用取消命令断开微信服务端连接
     try {
       await invoke('wechat_login_cancel');
@@ -146,9 +148,7 @@ export async function startLoginStream(
       console.warn('wechat_login_cancel failed:', e);
     }
     // 再取消前端事件监听
-    console.log('[startLoginStream] unlistening events');
     await unlistenEvent();
-    console.log('[startLoginStream] unlisten completed');
     await unlistenError();
   };
 }
@@ -194,6 +194,6 @@ export async function sendMessage(req: SendMessageRequest): Promise<SendMessageR
  */
 export async function getAccounts(): Promise<AccountsResponse> {
   let response = await invoke<AccountsResponse>('wechat_get_accounts');
-  console.log(response);
+  console.log("getAccounts:",response)
   return response;
 }

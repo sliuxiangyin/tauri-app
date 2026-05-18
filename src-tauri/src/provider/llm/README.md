@@ -25,31 +25,31 @@ Tauri 命令定义在 **`src-tauri/src/commands/llm.rs`**（`commands::llm`）�
 
 一次请求返回完整助手文本。参数与流式命令中的 `provider`、`req` 含义相同。
 
-### `llm_chat_stream(stream_id, provider, req) -> Result<(), String>`
+### `llm_chat_stream(account_id, req) -> Result<(), String>`
 
-- **`stream_id`**（必填）：由前端生成的请求关联 ID（建议 `crypto.randomUUID()`），须非空；仅含空白会返回错误。所有 `llm:chunk` 与对应 `llm:error` 均携带同一 `stream_id`，便于在 `listen` 回调里过滤并发/连点。
+- **`account_id`**（必填）：账号唯一标识，用于过滤 `llm:chunk` 与 `llm:error` 事件。所有事件均携带同一 `account_id`，便于在 `listen` 回调里按账号过滤。
 - **provider**、**req**：含义见下文「ProviderConfigPayload」「ChatRequest」。
 
 `AppHandle` 由 Tauri 注入，**不要**从前端传入。
 
-推荐顺序：**先** `listen('llm:chunk' / 'llm:error')`，**再** `invoke('llm_chat_stream', { stream_id, provider, req })`，避免丢失首包。
+推荐顺序：**先** `listen('llm:chunk' / 'llm:error')`，**再** `invoke('llm_chat_stream', { account_id, req })`，避免丢失首包。
 
 ### 前端事件
 
 | 事件名 | 载荷 |
 |--------|------|
 | `llm:chunk` | 见下节 **`LlmChunkEnvelope`** |
-| `llm:error` | `{ "stream_id": string, "message": string }`；随后仍会发一条 `llm:chunk`，`kind` 为 `done`（且同一 `stream_id`），便于 UI 收尾 |
+| `llm:error` | `{ "account_id": string, "message": string }`；随后仍会发一条 `llm:chunk`，`kind` 为 `done`（且同一 `account_id`），便于 UI 收尾 |
 
 `core:default` 已包含 `core:event:default`，一般无需为上述事件单独改 capability。
 
 ### `llm:chunk` 载荷形状（`LlmChunkEnvelope`）
 
-JSON 为 **`stream_id` + 扁平后的 `LlmStreamEvent`**（`kind` 为 `text_delta` 或 `done`）：
+JSON 为 **`account_id` + 扁平后的 `LlmStreamEvent`**（`kind` 为 `text_delta` 或 `done`）：
 
 ```json
-{ "stream_id": "550e8400-e29b-41d4-a716-446655440000", "kind": "text_delta", "text": "片段" }
-{ "stream_id": "550e8400-e29b-41d4-a716-446655440000", "kind": "done" }
+{ "account_id": "wx_123456", "kind": "text_delta", "text": "片段" }
+{ "account_id": "wx_123456", "kind": "done" }
 ```
 
 ## `ProviderConfigPayload`（`invoke` 中的 `provider`）

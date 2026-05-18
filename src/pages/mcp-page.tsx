@@ -83,9 +83,7 @@ export default function McpPage() {
     setLoading(true);
     setError(null);
     try {
-      console.log("Fetching MCP serve configs...");
       const list = await McpServeConfigApi.list();
-      console.log("Fetched MCP serve configs:", list);
       setConfigs(list);
       newIdsRef.current = new Set();
       if (list.length > 0) {

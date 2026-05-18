@@ -2,7 +2,6 @@ use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 // Model.config is McpModelConfig
 pub struct McpModelConfig {
     pub transport: String,

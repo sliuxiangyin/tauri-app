@@ -4,6 +4,7 @@ mod entity;
 mod migration;
 mod provider;
 mod services;
+mod types;
 
 use crate::provider::cache::Cache;
 use std::sync::Arc;
@@ -49,12 +50,14 @@ pub fn run() {
                 .inner()
                 .clone();
             let db_state_for_wechat = db_state.clone();
+            let cache_for_wechat = cache.clone();
             tauri::async_runtime::spawn(async move {
                 services::wechat_message::start_wechat_message_service(
                     app_handle.clone(),
                     db_state_for_wechat,
                     webhook_channel,
                     wechat_client,
+                    cache_for_wechat,
                 )
                 .await;
             });
@@ -96,12 +99,12 @@ pub fn run() {
             commands::mcp::delete_mcp_serve_config,
             // Chat commands
             commands::chat::get_messages,
-            commands::chat::save_message,
-            commands::chat::delete_message,
+            commands::chat::clear_messages,
             commands::chat::get_sessions,
             // Chat model commands
             commands::chat_model::set_chat_model,
             commands::chat_model::get_chat_model,
+            commands::chat_model::get_all_chat_models,
             // Wechat commands
             commands::wechat::wechat_login_stream,
             commands::wechat::wechat_login_cancel,

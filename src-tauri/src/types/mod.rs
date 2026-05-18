@@ -1,0 +1,5 @@
+//! 类型定义集中管理
+//!
+//! 按功能模块组织，与 services 层对应
+
+pub mod chat_model;

@@ -6,5 +6,6 @@
 //! - ❌ 不包含业务逻辑
 //! - ❌ 不直接调用 Provider 层
 
+pub mod chat;
 pub mod chat_model;
 pub mod mcp;

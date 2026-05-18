@@ -40,17 +40,13 @@ const AccountListContent = () => {
         try {
             const response = await getAccounts();
             setAccounts(response.accounts);
-            
-            // 检查是否有持久化保存的账号
             const { selectedAccount: savedAccount } = useChatStore.getState();
-                console.log("已保存的账号:", savedAccount);
             // 如果有已保存的账号且仍然存在于账户列表中，优先使用
             if (savedAccount && response.accounts.length > 0) {
                 const stillExists = response.accounts.find(a => a.accountId === savedAccount.accountId);
                 if (stillExists) {
                     setActiveId(savedAccount.accountId);
                     setSelectedAccount(savedAccount);
-                    console.log("恢复已选账号:", savedAccount);
                     return;
                 }
             }
@@ -61,7 +57,6 @@ const AccountListContent = () => {
                 const firstAccount = response.accounts[0];
                 setActiveId(firstAccount.accountId);
                 setSelectedAccount(firstAccount);
-                console.log("自动选择首个账户:", firstAccount);
             }
         } catch (error) {
             console.error("加载账户列表失败:", error);
