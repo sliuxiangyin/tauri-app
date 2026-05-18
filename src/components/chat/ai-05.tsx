@@ -225,15 +225,8 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
             >
               <IconRefresh className="size-4" />
             </Button>
-            <Button
-              size="icon"
-              variant="ghost"
-              className="size-8"
-              aria-label="Settings"
-              title="Settings"
-            >
-              <IconAdjustmentsHorizontal className="size-4" />
-            </Button>
+            {/* 模型选择 */}
+          
           </div>
         </header>
 

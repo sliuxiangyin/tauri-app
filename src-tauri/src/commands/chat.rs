@@ -210,3 +210,4 @@ pub async fn get_sessions(
             .map(|m: &ChatMessageModel| m.created_at.format("%Y-%m-%d %H:%M:%S").to_string()),
     }])
 }
+

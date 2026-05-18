@@ -6,6 +6,7 @@
 //! - ✅ 调用 services::db 获取数据（不直接访问数据库）
 //! - ❌ 不直接调用外部 HTTP API（由 Provider 层负责）
 
+pub mod chat_model_service;
 pub mod db;
 pub mod mcp_manager;
 pub mod mcp_service;

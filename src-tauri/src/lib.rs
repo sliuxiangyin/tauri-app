@@ -99,6 +99,9 @@ pub fn run() {
             commands::chat::save_message,
             commands::chat::delete_message,
             commands::chat::get_sessions,
+            // Chat model commands
+            commands::chat_model::set_chat_model,
+            commands::chat_model::get_chat_model,
             // Wechat commands
             commands::wechat::wechat_login_stream,
             commands::wechat::wechat_login_cancel,
