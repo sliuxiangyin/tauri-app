@@ -49,6 +49,8 @@ export interface McpServeConfig {
   tools: ToolInfo[];
   error: string | null;
   updated_at: string;
+  /** 安装状态：installing/connected/failed */
+  install_status?: 'installing' | 'connected' | 'failed';
 }
 
 export interface CreateMcpServeConfigPayload {

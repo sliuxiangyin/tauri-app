@@ -68,19 +68,30 @@ pub fn run() {
                 .await;
             });
 
-            // 注册 MCP 服务管理器（替代原来的 McpV2State）
-            // 先在同步 setup 中注册空的 Manager，再在后台完成真正的初始化
-            let mcp_manager = services::mcp_manager::McpServiceManager::new_arc();
-            app.manage(mcp_manager.clone()); // 先注册到 Tauri 状态
-
-            // 在后台异步初始化
-            let db_state_for_mcp = db_state.clone();
+            // 注册 MCP 服务管理器
+            let db_state_clone = db_state.clone();
             let cache_for_mcp = cache_arc.clone();
+            
+            // 创建空的 McpState 并注册到 Tauri（供 commands 使用）
+            let mcp_state = provider::mcp::McpState::new(3, Vec::new(), cache_for_mcp.clone());
+            let mcp_state_arc = std::sync::Arc::new(mcp_state);
+            app.manage(mcp_state_arc.clone());
+            // 异步加载配置并初始化
+            let mcp_init = mcp_state_arc.clone();
             tauri::async_runtime::spawn(async move {
-                mcp_manager
-                    .initialize(&db_state_for_mcp, cache_for_mcp)
-                    .await;
-            });
+                // 从数据库获取所有 MCP 配置
+                let configs = match services::mcp_service::get_all_mcp_configs(&db_state_clone).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::error!("Failed to load MCP configs: {}", e);
+                        return;
+                    }
+                };
+                tracing::info!("Loaded {} MCP server configs from database", configs.len());
+                // 调用初始化方法
+                mcp_init.init(configs).await;
+                tracing::info!("MCP State initialized");
+            }); 
 
             Ok(())
         })

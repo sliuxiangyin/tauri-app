@@ -108,3 +108,51 @@ pub async fn init_mcp_v2_with_api(
         .map_err(|e| McpManagerError::Internal { message: e.to_string() })?;
     Ok(McpV2Api::new(Arc::new(manager)))
 }
+
+
+use crate::db::DbState;
+use crate::provider::mcp::config::McpServerConfig;
+
+/// 从数据库获取所有 MCP 服务配置列表
+/// 
+/// # 参数
+/// - `db_state`: 数据库状态
+/// 
+/// # 返回
+/// 返回 `Vec<McpServerConfig>` 列表，失败时返回错误
+pub async fn get_all_mcp_configs(db_state: &DbState) -> Result<Vec<McpServerConfig>, crate::services::db::mcp::McpDataError> {
+    let records = crate::services::db::mcp::get_all_configs(db_state).await?;
+    let mut configs = Vec::new();
+    
+    for record in records {
+        // 解析 JSON 配置
+        let json: serde_json::Value = serde_json::from_str(&record.config)?;
+        let transport_type = json.get("transport").and_then(|v| v.as_str()).unwrap_or("stdio");
+        
+        let transport = match transport_type {
+            "http" => {
+                let url = json.get("url").and_then(|v| v.as_str()).unwrap_or_default();
+                crate::provider::mcp::config::TransportConfig::Http { url: url.to_string() }
+            }
+            _ => {
+                let command = json.get("command").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                let args = json.get("args").and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect())
+                    .unwrap_or_default();
+                crate::provider::mcp::config::TransportConfig::Stdio { command, args }
+            }
+        };
+        
+        configs.push(McpServerConfig {
+            id: record.id.to_string(),
+            name: record.name,
+            description: None,
+            transport,
+        });
+    }
+    
+    
+    
+    Ok(configs)
+}
+

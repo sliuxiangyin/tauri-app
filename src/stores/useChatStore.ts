@@ -20,6 +20,7 @@ const browserStorage = {
   },
 }
 
+// Chat 消息接口
 export interface ChatMessage {
   id: string
   account_id: string
@@ -156,7 +157,7 @@ export const useChatStore = create<ChatState>()(
   persistSelectedAccount: async (account: AccountInfo) => {
     // 注意：账号现在通过 zustand persist middleware 自动持久化
     // 这个方法保留但不再需要手动调用
-    console.log('[persistSelectedAccount] 账号已自动持久化:', account.account_id)
+    console.log('[persistSelectedAccount] 账号已自动持久化:', account.accountId)
   },
 
   // 初始化 Webhook 消息监听

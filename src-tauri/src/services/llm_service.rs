@@ -163,7 +163,7 @@ pub async fn chat_with_placeholder(
             metadata: Some("{}".to_string()),
         };
         if let Err(e) = chat::save_message(&*db, user_payload).await {
-            eprintln!("[chat_with_placeholder] 保存用户消息失败: {}", e);
+            tracing::error!("[chat_with_placeholder] 保存用户消息失败: {}", e);
         }
     }
 
@@ -220,7 +220,6 @@ pub async fn chat_with_placeholder(
         }
     };
 
-    tracing::debug!("[chat_with_placeholder] 开始调用 stream_chat, placeholder_id={}, messages count={}", placeholder_id, full_messages.len());
 
     // 5. 调用 stream_chat 执行流式聊天
     // 保存 abort_flag 克隆用于后续检测取消状态
@@ -234,7 +233,6 @@ pub async fn chat_with_placeholder(
         abort_flag,
     )
     .await;
-    tracing::debug!("[chat_with_placeholder] stream_chat result: {:?}", result);
     // 6. 根据结果更新 assistant 占位消息
     let is_cancelled = abort_flag_for_check.load(Ordering::SeqCst);
     if !placeholder_id.is_empty() {
@@ -242,14 +240,13 @@ pub async fn chat_with_placeholder(
 
         // 如果被取消且没有内容，则标记为 cancelled 状态并删除内容
         if is_cancelled && result.as_ref().map(|s| s.is_empty()).unwrap_or(false) {
-            tracing::debug!("[chat_with_placeholder] LLM 调用被取消，准备删除占位消息, placeholder_id={}", pid);
             if let Err(e) = chat::delete_message(&*db, placeholder_id).await {
                 tracing::error!("[chat_with_placeholder] 删除已取消的占位消息失败: {}", e);
             }
         } else {
             match &result {
                 Ok(reply) => {
-                    tracing::debug!("[chat_with_placeholder] LLM 调用成功，准备更新消息 status=completed, placeholder_id={}", pid);
+                    tracing::debug!(" LLM 调用成功，准备更新消息 status=completed, placeholder_id={}", pid);
                     if let Err(e) = chat::update_message(
                         &*db,
                         placeholder_id,
@@ -265,7 +262,6 @@ pub async fn chat_with_placeholder(
                 }
                 Err(e) => {
                     let error_content = format!("**调用失败**\n\n{}", e);
-                    tracing::error!("[chat_with_placeholder] LLM 调用失败，准备更新消息 status=error, placeholder_id={}, error={}", placeholder_id, e);
                     if let Err(e) = chat::update_message(
                         &*db,
                         placeholder_id,

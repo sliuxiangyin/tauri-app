@@ -3,8 +3,37 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tauri::Emitter;
 use tokio::sync::RwLock;
 use tracing::error;
+
+/// MCP 服务器安装状态
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum InstallStatus {
+    /// 正在安装中
+    Installing,
+    /// 已连接成功
+    Connected,
+    /// 安装失败
+    Failed(String),
+}
+
+impl Default for InstallStatus {
+    fn default() -> Self {
+        Self::Installing
+    }
+}
+
+/// MCP 服务器状态变化事件 Payload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerEventPayload {
+    pub server_id: String,
+    pub name: String,
+    pub status: String,
+    pub tool_count: usize,
+    pub error: Option<String>,
+}
 
 use crate::provider::cache::Cache;
 use crate::provider::mcp_v2::config::McpServerConfig;
@@ -54,6 +83,7 @@ impl ToolWithSource {
 /// - 全量初始化：根据配置创建所有连接，但不立即加载工具清单
 /// - 懒加载：首次 list_tools 时从 MCP 服务器获取并缓存
 /// - 添加/移除/更新操作同步更新全局状态和文件缓存
+/// - 支持异步安装，通过事件通知前端进度
 pub struct ServerManager {
     /// 服务器连接句柄
     connections: RwLock<HashMap<String, Arc<McpConnection>>>,
@@ -63,6 +93,10 @@ pub struct ServerManager {
     file_cache: Arc<Cache>,
     /// 服务器配置
     configs: RwLock<HashMap<String, McpServerConfig>>,
+    /// 各服务器安装状态（用于跟踪长耗时安装进度）
+    install_status: RwLock<HashMap<String, InstallStatus>>,
+    /// Tauri AppHandle，用于发送事件（需要外部注入）
+    app_handle: Arc<RwLock<Option<tauri::AppHandle>>>,
 }
 
 impl ServerManager {
@@ -118,10 +152,50 @@ impl ServerManager {
             tool_cache: RwLock::new(tool_cache_map),
             file_cache,
             configs: RwLock::new(config_map),
+            install_status: RwLock::new(HashMap::new()),
+            app_handle: Arc::new(RwLock::new(None)),
         })
     }
 
+    /// 设置 AppHandle（用于发送事件）
+    pub fn set_app_handle(&self, handle: tauri::AppHandle) {
+        let app_handle = self.app_handle.clone();
+        let handle = handle.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut h = app_handle.write().await;
+            *h = Some(handle);
+        });
+    }
+
+    /// 发送 MCP 服务器状态变化事件
+    async fn emit_server_event(&self, server_id: &str, name: &str, status: &str, tool_count: usize, error: Option<String>) {
+        let app_handle = self.app_handle.clone();
+        let server_id = server_id.to_string();
+        let name = name.to_string();
+        let status = status.to_string();
+        let error = error.clone();
+
+        tauri::async_runtime::spawn(async move {
+            let handle = app_handle.read().await;
+            if let Some(handle) = handle.as_ref() {
+                let payload = McpServerEventPayload {
+                    server_id,
+                    name,
+                    status,
+                    tool_count,
+                    error,
+                };
+                if let Err(e) = handle.emit("mcp:server-changed", payload) {
+                    println!("Failed to emit mcp:server-changed event: {}", e);
+                }
+            }
+        });
+    }
+
     /// 添加 MCP 服务器：建立连接并立即加载工具清单
+    ///
+    /// 注意：当前实现为同步模式。如果需要异步安装，
+    /// 前端可以通过轮询 `list_mcp_serve_configs` 来获取状态变化。
     pub async fn add_server(&self, config: McpServerConfig) -> Result<()> {
         let id = config.id.clone();
 
@@ -137,9 +211,11 @@ impl ServerManager {
         let running = transport::build_peer(&config.transport).await?;
         let conn = Arc::new(McpConnection::new(running));
 
-        // 立即加载工具清单
+        // 加载工具清单
         let tools = conn.list_tools().await?;
-        println!("Loaded {} tools for server '{}'", tools.len(), id);
+        let tool_count = tools.len();
+        println!("Loaded {} tools for server '{}'", tool_count, id);
+
         // 更新全局状态
         {
             let mut connections = self.connections.write().await;
@@ -154,12 +230,44 @@ impl ServerManager {
         // 写入文件缓存
         self.cache_tools_to_disk(&id, &tools);
 
-        println!("Server '{}' added with {} tools", id, tools.len());
+        // 标记为已连接
+        {
+            let mut status = self.install_status.write().await;
+            status.insert(id.clone(), InstallStatus::Connected);
+        }
+
+        // 发送连接成功事件
+        let name = self.configs.read().await.get(&id).map(|c| c.name.clone()).unwrap_or_else(|| id.clone());
+        let app_handle = self.app_handle.clone();
+        if let Some(handle) = app_handle.read().await.as_ref() {
+            let payload = McpServerEventPayload {
+                server_id: id.clone(),
+                name: name.clone(),
+                status: "connected".to_string(),
+                tool_count,
+                error: None,
+            };
+            let _ = handle.emit("mcp:server-changed", payload);
+        }
+
+        println!("Server '{}' added with {} tools", id, tool_count);
         Ok(())
+    }
+
+    /// 获取服务器安装状态
+    pub async fn get_install_status(&self, server_id: &str) -> Option<InstallStatus> {
+        let status = self.install_status.read().await;
+        status.get(server_id).cloned()
     }
 
     /// 移除 MCP 服务器：关闭连接并清除缓存
     pub async fn remove_server(&self, id: &str) -> Result<()> {
+        // 获取服务器名称用于发送事件
+        let name = {
+            let configs = self.configs.read().await;
+            configs.get(id).map(|c| c.name.clone()).unwrap_or_else(|| id.to_string())
+        };
+
         // 关闭连接
         if let Some(conn) = self.connections.write().await.remove(id) {
             conn.close().await;
@@ -168,12 +276,16 @@ impl ServerManager {
         // 清除内存缓存
         self.tool_cache.write().await.remove(id);
         self.configs.write().await.remove(id);
+        self.install_status.write().await.remove(id);
 
         // 清除文件缓存
         let cache_key = cache_key(id);
         if let Err(e) = self.file_cache.remove(&cache_key) {
             println!("Failed to invalidate cache for server '{}': {}", id, e);
         }
+
+        // 发送服务器移除事件
+        self.emit_server_event(id, &name, "removed", 0, None).await;
 
         println!("Server '{}' removed", id);
         Ok(())

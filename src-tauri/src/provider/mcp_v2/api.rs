@@ -25,8 +25,20 @@ impl McpV2Api {
         &self.manager
     }
 
-    /// 添加 MCP 服务器
+    /// 添加 MCP 服务器（异步模式，立即返回）
+    ///
+    /// 后台执行实际安装，通过 `mcp:server-changed` 事件通知前端安装进度。
     pub async fn add_server(&self, config: McpServerConfig) -> Result<()> {
+        self.manager.add_server(config).await
+    }
+
+    /// 添加 MCP 服务器（异步模式，带回调）
+    ///
+    /// 可选提供一个完成回调，在安装完成后调用。
+    pub async fn add_server_with_callback<F>(&self, config: McpServerConfig, _on_complete: F) -> Result<()>
+    where
+        F: FnOnce(Result<usize>) + Send + 'static,
+    {
         self.manager.add_server(config).await
     }
 

@@ -77,7 +77,7 @@ pub async fn list_mcp_serve_configs(
 
     // 获取 MCP API（可能尚未初始化）
     match mcp_manager.get_api().await {
-        Ok(Some(mcp_api)) => {
+        Ok(Some((mcp_api, _app_handle))) => {
             for dto in &mut dtos {
                 let id_str = dto.id.to_string();
                 // 获取连接状态
@@ -109,7 +109,10 @@ pub async fn list_mcp_serve_configs(
     Ok(dtos)
 }
 
-/// 创建新的 MCP 服务配置
+/// 创建新的 MCP 服务配置（异步安装模式）
+///
+/// 保存配置后，MCP 服务器的安装过程在后台异步执行。
+/// 通过 `mcp:server-changed` 事件通知前端安装进度。
 #[tauri::command]
 pub async fn create_mcp_serve_config(
     state: tauri::State<'_, DbState>,
@@ -131,13 +134,16 @@ pub async fn create_mcp_serve_config(
 
     let model = active.insert(&*db).await.map_err(|e| e.to_string())?;
 
-    // 尝试添加到 MCP 服务
-    if let Ok(Some(mcp_api)) = mcp_manager.get_api().await {
+    // 尝试添加到 MCP 服务（异步安装）
+    if let Ok(Some((mcp_api, _app_handle))) = mcp_manager.get_api().await {
         // 使用新的数据服务层转换
         let record = mcp_db::McpConfigRecord::from(model.clone());
         match mcp_db::record_to_server_config(record) {
             Ok(config) => {
-                mcp_api.add_server(config).await?;
+                // 异步安装，通过事件通知前端
+                if let Err(e) = mcp_api.add_server(config).await {
+                    tracing::warn!("异步添加 MCP 服务失败: {}", e);
+                }
             }
             Err(e) => {
                 tracing::warn!("新增 MCP 服务配置时转换失败: {}", e);
@@ -148,7 +154,7 @@ pub async fn create_mcp_serve_config(
     model_to_dto(model)
 }
 
-/// 更新已有配置
+/// 更新已有配置（异步模式）
 #[tauri::command]
 pub async fn update_mcp_serve_config(
     state: tauri::State<'_, DbState>,
@@ -177,12 +183,15 @@ pub async fn update_mcp_serve_config(
 
     let model = active.update(&*db).await.map_err(|e| e.to_string())?;
 
-    // 尝试更新 MCP 服务
-    if let Ok(Some(mcp_api)) = mcp_manager.get_api().await {
+    // 尝试更新 MCP 服务（异步模式）
+    if let Ok(Some((mcp_api, _app_handle))) = mcp_manager.get_api().await {
         let record = mcp_db::McpConfigRecord::from(model.clone());
         match mcp_db::record_to_server_config(record) {
             Ok(config) => {
-                mcp_api.update_server(&format!("{}", id), config).await?;
+                // 异步更新，通过事件通知前端
+                if let Err(e) = mcp_api.update_server(&format!("{}", id), config).await {
+                    tracing::warn!("异步更新 MCP 服务失败: {}", e);
+                }
             }
             Err(e) => {
                 tracing::warn!("更新 MCP 服务配置时转换失败: {}", e);
@@ -192,7 +201,8 @@ pub async fn update_mcp_serve_config(
 
     model_to_dto(model)
 }
-/// 删除一个配置
+
+/// 删除一个配置（异步模式）
 #[tauri::command]
 pub async fn delete_mcp_serve_config(
     state: tauri::State<'_, DbState>,
@@ -205,8 +215,11 @@ pub async fn delete_mcp_serve_config(
         .await
         .map_err(|e| e.to_string())?;
 
-    if let Ok(Some(mcp_api)) = mcp_manager.get_api().await {
-        mcp_api.remove_server(&format!("{}", id)).await?;
+    // 异步移除 MCP 服务（会发送 removed 事件）
+    if let Ok(Some((mcp_api, _app_handle))) = mcp_manager.get_api().await {
+        if let Err(e) = mcp_api.remove_server(&format!("{}", id)).await {
+            tracing::warn!("异步移除 MCP 服务失败: {}", e);
+        }
     }
     Ok(())
 }

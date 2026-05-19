@@ -19,7 +19,10 @@ enum ManagerState {
     /// 正在初始化
     Initializing,
     /// 已初始化成功
-    Ready(McpV2Api),
+    Ready {
+        api: McpV2Api,
+        app_handle: tauri::AppHandle,
+    },
     /// 初始化失败
     Failed(String),
 }
@@ -45,16 +48,16 @@ impl McpServiceManager {
     /// 获取 API 引用（带初始化检查）
     ///
     /// 返回：
-    /// - Ok(Some(api)) - 已初始化
+    /// - Ok(Some((api, app_handle))) - 已初始化
     /// - Ok(None) - 正在初始化中
     /// - Err(message) - 初始化失败
-    pub async fn get_api(&self) -> Result<Option<McpV2Api>, String> {
+    pub async fn get_api(&self) -> Result<Option<(McpV2Api, tauri::AppHandle)>, String> {
         let state = self.state.read().await;
         match &*state {
-            ManagerState::Ready(api) => {
+            ManagerState::Ready { api, app_handle } => {
                 // McpV2Api 未实现 Clone，通过重新包装 Arc 来创建新实例
                 let manager = api.manager().clone();
-                Ok(Some(McpV2Api::new(manager)))
+                Ok(Some((McpV2Api::new(manager), app_handle.clone())))
             }
             ManagerState::Initializing => Ok(None), // 正在初始化
             ManagerState::Failed(msg) => Err(msg.clone()),
@@ -66,7 +69,7 @@ impl McpServiceManager {
     pub async fn wait_ready(&self, timeout: std::time::Duration) -> Result<(), String> {
         let state = self.state.read().await;
         match &*state {
-            ManagerState::Ready(_) => Ok(()),
+            ManagerState::Ready { .. } => Ok(()),
             ManagerState::Initializing => {
                 drop(state); // 释放锁
                              // 等待信号或超时
@@ -78,7 +81,7 @@ impl McpServiceManager {
                         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                         let state = self.state.read().await;
                         match &*state {
-                            ManagerState::Ready(_) => return Ok(()),
+                            ManagerState::Ready { .. } => return Ok(()),
                             ManagerState::Failed(msg) => return Err(msg.clone()),
                             ManagerState::Initializing => {}
                         }
@@ -95,11 +98,11 @@ impl McpServiceManager {
     }
 
     /// 执行初始化
-    pub async fn initialize(&self, db_state: &DbState, cache: Arc<Cache>) {
+    pub async fn initialize(&self, db_state: &DbState, cache: Arc<Cache>, app_handle: tauri::AppHandle) {
         let mut state = self.state.write().await;
 
         // 再次检查，避免重复初始化
-        if matches!(&*state, ManagerState::Ready(_)) {
+        if matches!(&*state, ManagerState::Ready { .. }) {
             info!("MCP service already initialized");
             return;
         }
@@ -108,9 +111,9 @@ impl McpServiceManager {
 
         match init_mcp_v2_with_api(db_state, cache).await {
             Ok(api) => {
-                *state = ManagerState::Ready(api);
-                // 通知等待者
-                // 使用 std::sync::Mutex 来安全地获取 init_complete_tx
+                // 设置 AppHandle 给 ServerManager 用于发送事件
+                api.manager().set_app_handle(app_handle.clone());
+                *state = ManagerState::Ready { api, app_handle };
                 info!("MCP service initialized successfully");
             }
             Err(e) => {
@@ -125,7 +128,7 @@ impl McpServiceManager {
     /// 检查是否已就绪
     #[allow(dead_code)]
     pub async fn is_ready(&self) -> bool {
-        matches!(*self.state.read().await, ManagerState::Ready(_))
+        matches!(*self.state.read().await, ManagerState::Ready { .. })
     }
 
     /// 获取错误信息（如果初始化失败）
@@ -153,7 +156,7 @@ impl McpServiceManager {
 
 /// 便捷函数：创建带初始化的管理器
 #[allow(dead_code)]
-pub async fn create_manager(db_state: &DbState, cache: Arc<Cache>) -> Arc<McpServiceManager> {
+pub async fn create_manager(db_state: &DbState, cache: Arc<Cache>, app_handle: tauri::AppHandle) -> Arc<McpServiceManager> {
     let manager = Arc::new(McpServiceManager::new());
     let db_state = db_state.clone();
     let cache = cache.clone();
@@ -161,7 +164,7 @@ pub async fn create_manager(db_state: &DbState, cache: Arc<Cache>) -> Arc<McpSer
     // 后台初始化
     let mgr = manager.clone();
     tauri::async_runtime::spawn(async move {
-        mgr.initialize(&db_state, cache).await;
+        mgr.initialize(&db_state, cache, app_handle).await;
     });
 
     manager
