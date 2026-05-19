@@ -55,6 +55,7 @@ export function ChatBox({ accountId, onUserSubmit, className }: ChatBoxProps) {
   );
 
   const handleCancel = useCallback(async () => {
+    console.log("[ChatBox] 取消 LLM 流式响应")
     const accId = accountIdRef.current;
     if (accId && isTauriRuntime()) {
       console.log("[ChatBox] 取消 LLM 流式响应, accountId:", accId);
@@ -90,7 +91,7 @@ export function ChatBox({ accountId, onUserSubmit, className }: ChatBoxProps) {
           </PromptInputTools>
           <PromptInputSubmit
             status={status}
-            disabled={!inputValue.trim() || status !== "ready"}
+            disabled={status !== "streaming" && !inputValue.trim()}
             onClick={status === "streaming" ? handleCancel : undefined}
           />
         </PromptInputFooter>

@@ -227,22 +227,7 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
         },
         onStreamEnd: async () => {
           // LLM 流结束时，保存 assistant 回复到数据库
-          const finalMessage = messagesRef.current.find((m) => m.id === assistantId);
-          if (finalMessage && account) {
-            try {
-              await invoke('save_message', {
-                payload: {
-                  accountId: account.accountId,
-                  chat_type: 'client',
-                  session_id: 'default',
-                  role: 'assistant',
-                  content: finalMessage.content,
-                },
-              });
-            } catch (e) {
-              console.error('保存 LLM 回复失败:', e);
-            }
-          }
+       
         },
       });
     } catch (e) {
