@@ -35,8 +35,8 @@ pub fn run() {
             let app_handle = app.handle().clone();
             let db_state = db::DbState::new(app_handle.clone());
             app.manage(db_state.clone());
-            app.manage(provider::wechat::WechatClient::new(wechat_url.clone()));
-            // 启动 HTTP webhook 服务
+            
+            // 启动 HTTP webhook 服务（内部会创建 WechatClient）
             provider::server::start_http_server(app);
 
             // 初始化通用缓存管理器（单例，整个应用共享）
@@ -50,7 +50,8 @@ pub fn run() {
             app.manage(commands::llm::LlmAbortFlags::new());
 
             // 启动微信消息服务（在后台运行）
-            let wechat_client = provider::wechat::WechatClient::new(wechat_url);
+            let wechat_client = provider::wechat::WechatClient::new(wechat_url.clone());
+             
             let webhook_channel = app
                 .state::<Arc<provider::server::WebhookChannel>>()
                 .inner()
