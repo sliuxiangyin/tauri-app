@@ -15,7 +15,7 @@ import {
     ContextMenuItem,
     ContextMenuTrigger,
 } from "@/components/ui/context-menu";
-import { AccountInfo } from "@/lib/wechat-api";
+import { AccountInfo } from "@/lib/api/wechat";
 
 interface AccountItemProps {
     account: AccountInfo;

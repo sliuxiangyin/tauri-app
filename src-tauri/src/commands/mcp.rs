@@ -1,225 +1,113 @@
+//! MCP 服务配置 Command 层
+//! 提供给前端的 CRUD 接口
+
 use crate::db::DbState;
-use crate::entity::mcp_serve_config::{self as msc, McpModelConfig};
-use crate::provider::mcp_v2::ToolWithSource;
-use crate::services::db::mcp as mcp_db;
-use crate::services::mcp_manager::McpServiceManager;
-use sea_orm::{ActiveModelTrait, EntityTrait, NotSet, QueryOrder, Set};
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-// ---------------------------------------------------------------------------
-// Config 结构化 DTO（与前端 mcp-service.ts 对应）
-// ---------------------------------------------------------------------------
+use crate::services::db::mcp::{CreateMcpPayload, McpDto, UpdateMcpPayload};
+use crate::services::db::mcp as db_mcp;
+use tauri::State;
 
-// ---------------------------------------------------------------------------
-// DTOs
-// ---------------------------------------------------------------------------
+/// Transport 类型常量
+const TRANSPORT_STDIO: &str = "stdio";
+const TRANSPORT_HTTP: &str = "http";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpServeConfigDto {
-    pub id: i32,
-    pub name: String,
-    pub config: McpModelConfig,
-    pub state: bool,
-    pub tools: Vec<ToolWithSource>,
-    //失败原因
-    pub error: Option<String>,
-    pub updated_at: String,
+/// 从 config JSON 自动解析 transport 类型
+fn parse_transport(config_json: &str) -> String {
+    // 尝试解析为 JSON 对象
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(config_json) {
+        // STDIO: 包含 command 字段
+        if value.get("command").is_some() {
+            return TRANSPORT_STDIO.to_string();
+        }
+        // HTTP: 包含 url 字段
+        if let Some(url) = value.get("url").and_then(|v| v.as_str()) {
+            if url.contains("sse") {
+                return TRANSPORT_HTTP.to_string();
+            }
+            if url.contains("streamable") {
+                return TRANSPORT_HTTP.to_string();
+            }
+            return TRANSPORT_HTTP.to_string();
+        }
+    }
+    // 默认返回 HTTP
+    TRANSPORT_HTTP.to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreateMcpServeConfigPayload {
-    pub name: String,
-    pub config: McpModelConfig,
+/// 获取所有 MCP 配置
+#[tauri::command]
+pub async fn get_all_mcps(db_state: State<'_, DbState>) -> Result<Vec<McpDto>, String> {
+    let db = db_state.get().await.map_err(|e| e.to_string())?;
+    db_mcp::get_all_mcps(&db).await
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct UpdateMcpServeConfigPayload {
-    pub name: Option<String>,
-    pub config: Option<McpModelConfig>,
+/// 获取单个 MCP 配置
+#[tauri::command]
+pub async fn get_mcp(db_state: State<'_, DbState>, name: String) -> Result<Option<McpDto>, String> {
+    let db = db_state.get().await.map_err(|e| e.to_string())?;
+    db_mcp::get_mcp_by_name(&db, &name).await
 }
 
-fn model_to_dto(m: msc::Model) -> Result<McpServeConfigDto, String> {
-    let config: McpModelConfig =
-        serde_json::from_str(&m.config).map_err(|e| format!("config parse error: {e}"))?;
-    Ok(McpServeConfigDto {
-        id: m.id,
-        name: m.name,
+/// 创建 MCP 配置
+#[tauri::command]
+pub async fn create_mcp(
+    db_state: State<'_, DbState>,
+    name: String,
+    config: String,  // JSON 字符串
+    status: String,
+) -> Result<McpDto, String> {
+    // 自动解析 transport
+    let transport = parse_transport(&config);
+    
+    let payload = CreateMcpPayload {
+        name,
+        transport,
         config,
-        state: false,
-        tools: Vec::new(),
-        error: None,
-        updated_at: m.updated_at.to_string(),
-    })
-}
-
-// ---------------------------------------------------------------------------
-// Tauri 命令
-// ---------------------------------------------------------------------------
-
-/// 列出所有 MCP 服务配置（含运行时状态）
-#[tauri::command]
-pub async fn list_mcp_serve_configs(
-    state: tauri::State<'_, DbState>,
-    mcp_manager: tauri::State<'_, Arc<McpServiceManager>>,
-) -> Result<Vec<McpServeConfigDto>, String> {
-    let db = state.get().await.map_err(|e| e.to_string())?;
-    tracing::debug!("Listing MCP serve configs");
-    let configs = msc::Entity::find()
-        .order_by_asc(msc::Column::Id)
-        .all(&*db)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let mut dtos: Vec<McpServeConfigDto> = configs
-        .into_iter()
-        .map(model_to_dto)
-        .collect::<Result<Vec<_>, _>>()?;
-
-    // 获取 MCP API（可能尚未初始化）
-    match mcp_manager.get_api().await {
-        Ok(Some((mcp_api, _app_handle))) => {
-            for dto in &mut dtos {
-                let id_str = dto.id.to_string();
-                // 获取连接状态
-                dto.state = mcp_api.is_connected(&id_str).await;
-                // 获取该服务器的工具列表
-                match mcp_api.list_tools(Some(&id_str)).await {
-                    Ok(tools) => {
-                        dto.tools = tools;
-                    }
-                    Err(e) => {
-                        dto.error = Some(e.to_string());
-                    }
-                }
-            }
-        }
-        Ok(None) => {
-            // 正在初始化中，返回基础信息
-            tracing::debug!("MCP service is still initializing");
-        }
-        Err(e) => {
-            // 初始化失败
-            tracing::warn!("MCP service initialization failed: {}", e);
-            for dto in &mut dtos {
-                dto.error = Some(format!("MCP服务未就绪: {}", e));
-            }
-        }
-    }
-
-    Ok(dtos)
-}
-
-/// 创建新的 MCP 服务配置（异步安装模式）
-///
-/// 保存配置后，MCP 服务器的安装过程在后台异步执行。
-/// 通过 `mcp:server-changed` 事件通知前端安装进度。
-#[tauri::command]
-pub async fn create_mcp_serve_config(
-    state: tauri::State<'_, DbState>,
-    payload: CreateMcpServeConfigPayload,
-    mcp_manager: tauri::State<'_, Arc<McpServiceManager>>,
-) -> Result<McpServeConfigDto, String> {
-    let db: std::sync::Arc<sea_orm::prelude::DatabaseConnection> =
-        state.get().await.map_err(|e| e.to_string())?;
-
-    let config_json = serde_json::to_string(&payload.config)
-        .map_err(|e| format!("config serialize error: {e}"))?;
-
-    let active = msc::ActiveModel {
-        id: NotSet,
-        name: Set(payload.name),
-        config: Set(config_json),
-        updated_at: Set(chrono::Utc::now().timestamp()),
+        status,
     };
-
-    let model = active.insert(&*db).await.map_err(|e| e.to_string())?;
-
-    // 尝试添加到 MCP 服务（异步安装）
-    if let Ok(Some((mcp_api, _app_handle))) = mcp_manager.get_api().await {
-        // 使用新的数据服务层转换
-        let record = mcp_db::McpConfigRecord::from(model.clone());
-        match mcp_db::record_to_server_config(record) {
-            Ok(config) => {
-                // 异步安装，通过事件通知前端
-                if let Err(e) = mcp_api.add_server(config).await {
-                    tracing::warn!("异步添加 MCP 服务失败: {}", e);
-                }
-            }
-            Err(e) => {
-                tracing::warn!("新增 MCP 服务配置时转换失败: {}", e);
-            }
-        }
-    }
-
-    model_to_dto(model)
+    let db = db_state.get().await.map_err(|e| e.to_string())?;
+    db_mcp::create_mcp(&db, payload).await
 }
 
-/// 更新已有配置（异步模式）
+/// 更新 MCP 配置
 #[tauri::command]
-pub async fn update_mcp_serve_config(
-    state: tauri::State<'_, DbState>,
-    id: i32,
-    payload: UpdateMcpServeConfigPayload,
-    mcp_manager: tauri::State<'_, Arc<McpServiceManager>>,
-) -> Result<McpServeConfigDto, String> {
-    let db = state.get().await.map_err(|e| e.to_string())?;
-    let entity = msc::Entity::find_by_id(id)
-        .one(&*db)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("mcp serve config not found: {id}"))?;
-
-    let mut active: msc::ActiveModel = entity.into();
-
-    if let Some(v) = payload.name {
-        active.name = Set(v);
-    }
-    if let Some(config) = payload.config {
-        let config_json =
-            serde_json::to_string(&config).map_err(|e| format!("config serialize error: {e}"))?;
-        active.config = Set(config_json);
-    }
-    active.updated_at = Set(chrono::Utc::now().timestamp());
-
-    let model = active.update(&*db).await.map_err(|e| e.to_string())?;
-
-    // 尝试更新 MCP 服务（异步模式）
-    if let Ok(Some((mcp_api, _app_handle))) = mcp_manager.get_api().await {
-        let record = mcp_db::McpConfigRecord::from(model.clone());
-        match mcp_db::record_to_server_config(record) {
-            Ok(config) => {
-                // 异步更新，通过事件通知前端
-                if let Err(e) = mcp_api.update_server(&format!("{}", id), config).await {
-                    tracing::warn!("异步更新 MCP 服务失败: {}", e);
-                }
-            }
-            Err(e) => {
-                tracing::warn!("更新 MCP 服务配置时转换失败: {}", e);
-            }
-        }
-    }
-
-    model_to_dto(model)
+pub async fn update_mcp(
+    db_state: State<'_, DbState>,
+    name: String,
+    config: Option<String>,  // 可选 JSON 字符串
+    status: Option<String>,
+) -> Result<McpDto, String> {
+    let payload = UpdateMcpPayload {
+        config,
+        status,
+        ..Default::default()
+    };
+    let db = db_state.get().await.map_err(|e| e.to_string())?;
+    db_mcp::update_mcp_by_name(&db, &name, payload).await
 }
 
-/// 删除一个配置（异步模式）
+/// 删除 MCP 配置
 #[tauri::command]
-pub async fn delete_mcp_serve_config(
-    state: tauri::State<'_, DbState>,
-    id: i32,
-    mcp_manager: tauri::State<'_, Arc<McpServiceManager>>,
-) -> Result<(), String> {
-    let db = state.get().await.map_err(|e| e.to_string())?;
-    msc::Entity::delete_by_id(id)
-        .exec(&*db)
-        .await
-        .map_err(|e| e.to_string())?;
+pub async fn delete_mcp(db_state: State<'_, DbState>, name: String) -> Result<(), String> {
+    let db = db_state.get().await.map_err(|e| e.to_string())?;
+    db_mcp::delete_mcp_by_name(&db, &name).await
+}
 
-    // 异步移除 MCP 服务（会发送 removed 事件）
-    if let Ok(Some((mcp_api, _app_handle))) = mcp_manager.get_api().await {
-        if let Err(e) = mcp_api.remove_server(&format!("{}", id)).await {
-            tracing::warn!("异步移除 MCP 服务失败: {}", e);
-        }
-    }
-    Ok(())
+/// 切换 MCP 状态
+#[tauri::command]
+pub async fn toggle_mcp_status(
+    db_state: State<'_, DbState>,
+    name: String,
+) -> Result<McpDto, String> {
+    let db = db_state.get().await.map_err(|e| e.to_string())?;
+    
+    let mcp = db_mcp::get_mcp_by_name(&db, &name)
+        .await?
+        .ok_or_else(|| format!("MCP not found: {}", name))?;
+    
+    let new_status = if mcp.status == "enable" { "disable" } else { "enable" };
+    let payload = UpdateMcpPayload { 
+        status: Some(new_status.to_string()), 
+        ..Default::default() 
+    };
+    db_mcp::update_mcp_by_name(&db, &name, payload).await
 }

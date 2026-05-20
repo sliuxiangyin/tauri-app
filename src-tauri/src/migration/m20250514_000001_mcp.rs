@@ -9,19 +9,24 @@ impl MigrationTrait for Migration {
         manager
             .create_table(
                 Table::create()
-                    .table(McpServeConfig::Table)
+                    .table(Mcp::Table)
                     .if_not_exists()
                     .col(
-                        ColumnDef::new(McpServeConfig::Id)
+                        ColumnDef::new(Mcp::Id)
                             .integer()
                             .not_null()
                             .auto_increment()
                             .primary_key(),
                     )
-                    .col(ColumnDef::new(McpServeConfig::Name).string().not_null())
-                    .col(ColumnDef::new(McpServeConfig::Config).text().not_null())
+                    .col(ColumnDef::new(Mcp::Name).string().not_null())
+                    .col(ColumnDef::new(Mcp::Transport).string().not_null().default("stdio"))
+                    .col(ColumnDef::new(Mcp::Config).text().not_null())
+                    .col(ColumnDef::new(Mcp::Status).string().default("disable"))
+                    .col(ColumnDef::new(Mcp::Operating).string().default("idle"))
+                    .col(ColumnDef::new(Mcp::Tools).text().default("[]"))
+                    .col(ColumnDef::new(Mcp::ErrorMsg).text().default(""))
                     .col(
-                        ColumnDef::new(McpServeConfig::UpdatedAt)
+                        ColumnDef::new(Mcp::UpdatedAt)
                             .integer()
                             .not_null()
                             .default(0),
@@ -35,17 +40,22 @@ impl MigrationTrait for Migration {
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         manager
-            .drop_table(Table::drop().table(McpServeConfig::Table).to_owned())
+            .drop_table(Table::drop().table(Mcp::Table).to_owned())
             .await?;
         Ok(())
     }
 }
 
 #[derive(DeriveIden)]
-enum McpServeConfig {
+enum Mcp {
     Table,
     Id,
     Name,
+    Transport,
     Config,
+    Status,
+    Operating,
+    Tools,
+    ErrorMsg,
     UpdatedAt,
 }

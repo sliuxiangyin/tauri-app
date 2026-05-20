@@ -14,7 +14,7 @@ import {
     SidebarTrigger,
     useSidebar,
 } from "@/components/ui/sidebar";
-import { getAccounts, AccountInfo } from "@/lib/wechat-api";
+import { getAccounts, AccountInfo } from "@/lib/api/wechat";
 import { useChatStore } from "@/stores/useChatStore";
 import AccountItem from "./account-item";
 import {

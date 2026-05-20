@@ -16,7 +16,7 @@ import {
   IconPaperclip,
   IconTool,
 } from "@tabler/icons-react";
-import { cancelLlmChat, isTauriRuntime } from "@/lib/tauri-llm";
+import { cancelLlmChat, isTauriRuntime } from "@/lib/api/tauri-llm";
 import { cn } from "@/lib/utils";
 
 const inputGroupClassName =

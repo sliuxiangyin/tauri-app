@@ -18,23 +18,20 @@ import { cn } from "@/lib/utils";
 import {
   isTauriRuntime,
   streamLlmChat,
-  type ChatMessagePayload,
-} from "@/lib/tauri-llm";
+} from "@/lib/api/tauri-llm";
 import {
   IconAdjustmentsHorizontal,
   IconTrash,
 } from "@tabler/icons-react";
 import { type ChatMessage } from "@/stores/useChatStore";
-import { type AccountInfo } from "@/lib/wechat-api";
-import { invoke } from "@tauri-apps/api/core";
-import { clearMessages } from "@/lib/chat-api";
+import { type AccountInfo } from "@/lib/api/wechat";
+import { clearMessages } from "@/lib/api/chat";
 import {
   getChatModel,
   getAllChatModels,
-  setChatModel,
   type AccountModelDto,
   type ModelGroup,
-} from "@/lib/chat-model-api";
+} from "@/lib/api/chat-model";
 import {
   Dialog,
   DialogContent,
@@ -115,19 +112,6 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
         setModelGroups([]);
       });
   }, []);
-
-  // 选择模型处理
-  const handleModelSelect = async (groupId: string, modelItem: { modelId: string; modelName: string }) => {
-    if (!account) return;
-
-    try {
-      const updated = await setChatModel(account.accountId, groupId, modelItem.modelId);
-      setCurrentModel(updated);
-      setIsModelMenuOpen(false);
-    } catch (e) {
-      console.error("设置模型失败:", e);
-    }
-  };
 
   // 清空消息处理
   const handleClearMessages = async () => {

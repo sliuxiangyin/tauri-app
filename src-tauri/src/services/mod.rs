@@ -9,6 +9,4 @@
 pub mod chat_model_service;
 pub mod db;
 pub mod llm_service;
-pub mod mcp_manager;
-pub mod mcp_service;
 pub mod wechat_message;

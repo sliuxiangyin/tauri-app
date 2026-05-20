@@ -2,7 +2,8 @@ use once_cell::sync::OnceCell;
 use std::sync::Arc;
 use tracing::debug;
 
-use crate::provider::mcp_v2::error::{McpManagerError, Result};
+pub mod error;
+pub use error::{CacheError, Result};
 
 /// 全局 Cache 单例（使用 Arc 包装）
 static CACHE_INSTANCE: OnceCell<Arc<Cache>> = OnceCell::new();
@@ -18,9 +19,7 @@ pub struct Cache {
 impl Cache {
     /// 在指定路径创建或打开缓存数据库
     pub fn open(path: &str) -> Result<Self> {
-        let db = sled::open(path).map_err(|e| {
-            McpManagerError::CacheError(format!("failed to open sled db at '{}': {}", path, e))
-        })?;
+        let db = sled::open(path)?;
         Ok(Self {
             db: std::sync::Mutex::new(db),
         })
@@ -31,7 +30,7 @@ impl Cache {
         let arc = Arc::new(cache);
         CACHE_INSTANCE
             .set(arc.clone())
-            .map_err(|_| McpManagerError::CacheError("Cache global instance already set".to_string()))?;
+            .map_err(|_| CacheError::AlreadySet)?;
         Ok(arc)
     }
 
@@ -40,48 +39,28 @@ impl Cache {
         CACHE_INSTANCE
             .get()
             .cloned()
-            .ok_or_else(|| McpManagerError::CacheError("Cache not initialized".to_string()))
+            .ok_or(CacheError::NotInitialized)
     }
 
     /// 存入键值对（覆盖已有记录）
     pub fn put(&self, key: &str, value: Vec<u8>) -> Result<()> {
-        let db = self
-            .db
-            .lock()
-            .map_err(|e| McpManagerError::CacheError(format!("cache mutex poisoned: {}", e)))?;
-        db.insert(key, value)
-            .map_err(|e| McpManagerError::CacheError(format!("write cache failed: {}", e)))?;
-        db.flush()
-            .map_err(|e| McpManagerError::CacheError(format!("flush cache failed: {}", e)))?;
-
+        let db = self.db.lock().map_err(|e| CacheError::Mutex(e.to_string()))?;
+        db.insert(key, value)?;
+        db.flush()?;
         debug!("cached entry for key '{}'", key);
         Ok(())
     }
 
     /// 根据键读取值，不存在时返回 `None`
     pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        let db = self
-            .db
-            .lock()
-            .map_err(|e| McpManagerError::CacheError(format!("cache mutex poisoned: {}", e)))?;
-        match db.get(key) {
-            Ok(Some(v)) => Ok(Some(v.to_vec())),
-            Ok(None) => Ok(None),
-            Err(e) => Err(McpManagerError::CacheError(format!(
-                "read cache failed: {}",
-                e
-            ))),
-        }
+        let db = self.db.lock().map_err(|e| CacheError::Mutex(e.to_string()))?;
+        Ok(db.get(key)?.map(|v| v.to_vec()))
     }
 
     /// 删除指定键的缓存项
     pub fn remove(&self, key: &str) -> Result<()> {
-        let db = self
-            .db
-            .lock()
-            .map_err(|e| McpManagerError::CacheError(format!("cache mutex poisoned: {}", e)))?;
-        db.remove(key)
-            .map_err(|e| McpManagerError::CacheError(format!("remove cache failed: {}", e)))?;
+        let db = self.db.lock().map_err(|e| CacheError::Mutex(e.to_string()))?;
+        db.remove(key)?;
         let _ = db.flush();
         debug!("removed cache entry for key '{}'", key);
         Ok(())

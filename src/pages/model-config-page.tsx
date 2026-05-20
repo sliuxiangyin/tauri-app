@@ -12,7 +12,7 @@ import {
   deleteConfigById,
   fetchAllConfigs,
   updateConfig,
-} from "@/lib/model-config-api";
+} from "@/lib/api/model-config";
 import { SiderContent } from "@/components/common/sider-content";
 import { ProfileListItem } from "@/components/model-config-page/config-profile-list-item";
 

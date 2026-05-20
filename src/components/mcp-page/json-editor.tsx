@@ -1,59 +1,31 @@
-import Editor from "react-simple-code-editor";
-import { highlight, languages } from "prismjs";
-import "prismjs/components/prism-json";
-import "prismjs/themes/prism-tomorrow.css";
-import { Card, CardContent } from "@/components/ui/card";
+import * as React from "react";
+import { Textarea } from "@/components/ui/textarea";
 
 interface JsonEditorProps {
   value: Record<string, any>;
   onChange: (value: Record<string, any>) => void;
 }
 
-function removeEmptyValues(obj: Record<string, any>): Record<string, any> {
-  const result: Record<string, any> = {};
-  for (const [key, val] of Object.entries(obj)) {
-    if (val === null || val === undefined) continue;
-    if (typeof val === "object" && !Array.isArray(val)) {
-      const nested = removeEmptyValues(val);
-      if (Object.keys(nested).length > 0) {
-        result[key] = nested;
-      }
-    } else if (Array.isArray(val)) {
-      if (val.length > 0) {
-        result[key] = val;
-      }
-    } else if (val !== "" && val !== false) {
-      result[key] = val;
-    }
-  }
-  return result;
-}
-
 export function JsonEditor({ value, onChange }: JsonEditorProps) {
-  const code = JSON.stringify(removeEmptyValues(value), null, 2);
+  // 直接使用 value 字符串化，不做任何转换，保留用户原始输入
+  const code = JSON.stringify(value, null, 2);
 
-  const handleChange = (text: string) => {
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const text = e.target.value;
     try {
       const parsed = JSON.parse(text);
       onChange(parsed);
-    } catch (e) {}
+    } catch (e) {
+      // JSON 解析失败时不更新，保持当前有效值
+    }
   };
 
   return (
-    <Card>
-      <CardContent className="p-0">
-        <Editor
+        <Textarea
           value={code}
-          onValueChange={handleChange}
-          highlight={(code) => highlight(code, languages.json, "json")}
-          padding={16}
-          style={{
-            fontFamily: '"Fira Code", monospace',
-            fontSize: 12,
-            minHeight: "300px",
-          }}
+          onChange={handleChange}
+          className="min-h-[300px] font-mono text-sm"
+          spellCheck={false}
         />
-      </CardContent>
-    </Card>
   );
 }

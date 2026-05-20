@@ -6,14 +6,14 @@
 //! - 提供获取当前账户模型的能力
 
 use crate::db::DbState;
-use crate::provider::cache::Cache;
+use crate::provider::cache::{Cache, CacheError};
 use crate::provider::llm::types::ProviderConfigPayload;
 use crate::services::db::chat_model as chat_model_db;
 use crate::types::chat_model::{AccountModelSelection, ModelGroup, ModelItem};
 use std::sync::Arc;
 
 /// 缓存操作结果类型
-type CacheResult<T> = std::result::Result<T, crate::provider::mcp_v2::error::McpManagerError>;
+type CacheResult<T> = std::result::Result<T, CacheError>;
 
 const CHAT_MODEL_KEY_PREFIX: &str = "chat_model:";
 

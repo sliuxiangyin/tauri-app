@@ -1,4 +1,4 @@
-// lib/chat-model-api.ts
+// lib/api/chat-model.ts
 // Chat Model 相关的 Tauri API 调用封装
 
 import { invoke } from "@tauri-apps/api/core";
@@ -46,7 +46,7 @@ export async function getChatModel(accountId: string): Promise<AccountModelDto> 
 export async function getAllChatModels(): Promise<ModelGroup[]> {
   const result = await invoke<ModelGroup[]>("get_all_chat_models");
   return result;
-} 
+}
 
 /**
  * 设置账户的模型选择

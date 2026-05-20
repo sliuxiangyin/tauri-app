@@ -31,7 +31,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
-        .setup(|app: &mut tauri::App| {
+        .setup(move |app: &mut tauri::App| {
             let app_handle = app.handle().clone();
             let db_state = db::DbState::new(app_handle.clone());
             app.manage(db_state.clone());
@@ -51,7 +51,8 @@ pub fn run() {
 
             // 启动微信消息服务（在后台运行）
             let wechat_client = provider::wechat::WechatClient::new(wechat_url.clone());
-             
+            app.manage(wechat_client.clone());
+            
             let webhook_channel = app
                 .state::<Arc<provider::server::WebhookChannel>>()
                 .inner()
@@ -70,29 +71,8 @@ pub fn run() {
             });
 
             // 注册 MCP 服务管理器
-            let db_state_clone = db_state.clone();
             let cache_for_mcp = cache_arc.clone();
-            
-            // 创建空的 McpState 并注册到 Tauri（供 commands 使用）
-            let mcp_state = provider::mcp::McpState::new(3, Vec::new(), cache_for_mcp.clone());
-            let mcp_state_arc = std::sync::Arc::new(mcp_state);
-            app.manage(mcp_state_arc.clone());
-            // 异步加载配置并初始化
-            let mcp_init = mcp_state_arc.clone();
-            tauri::async_runtime::spawn(async move {
-                // 从数据库获取所有 MCP 配置
-                let configs = match services::mcp_service::get_all_mcp_configs(&db_state_clone).await {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::error!("Failed to load MCP configs: {}", e);
-                        return;
-                    }
-                };
-                tracing::info!("Loaded {} MCP server configs from database", configs.len());
-                // 调用初始化方法
-                mcp_init.init(configs).await;
-                tracing::info!("MCP State initialized");
-            }); 
+            let db_state_clone = db_state.clone();
 
             Ok(())
         })
@@ -112,10 +92,13 @@ pub fn run() {
             commands::model_config::reorder_provider_models,
             commands::model_config::resolve_provider_payload,
             // MCP serve config commands
-            commands::mcp::list_mcp_serve_configs,
-            commands::mcp::create_mcp_serve_config,
-            commands::mcp::update_mcp_serve_config,
-            commands::mcp::delete_mcp_serve_config,
+                        commands::mcp::get_all_mcps,
+                        commands::mcp::get_mcp,
+                        commands::mcp::create_mcp,
+                        commands::mcp::update_mcp,
+                        commands::mcp::delete_mcp,
+                        commands::mcp::toggle_mcp_status,
+          
             // Chat commands
             commands::chat::get_messages,
             commands::chat::clear_messages,

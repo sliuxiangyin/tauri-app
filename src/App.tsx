@@ -3,15 +3,17 @@ import { useEffect } from "react";
 import { TooltipProvider } from "./components/ui/tooltip";
 import MainPage from "./pages/main-page";
 import { useChatStore } from "./stores/useChatStore";
+import { useMcpStore } from "./stores/useMcpStore";
 
 function App() {
   const initWebhookListener = useChatStore((s) => s.initWebhookListener);
 
   useEffect(() => {
     // 应用启动时初始化 Webhook 消息监听
-    const cleanup = initWebhookListener();
+    const cleanupWebhook = initWebhookListener();
+
     return () => {
-      cleanup.then((fn) => fn());
+      cleanupWebhook.then((fn) => fn());
     };
   }, [initWebhookListener]);
 
@@ -25,7 +27,3 @@ function App() {
 }
 
 export default App;
-
-function testTauriSerialization() {
-  throw new Error("Function not implemented.");
-}

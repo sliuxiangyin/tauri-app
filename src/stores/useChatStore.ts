@@ -3,8 +3,8 @@ import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { listen } from '@tauri-apps/api/event'
 import type { UnlistenFn } from '@tauri-apps/api/event'
-import type { AccountInfo } from '@/lib/wechat-api'
-import { getMessages } from '@/lib/chat-api'
+import type { AccountInfo } from '@/lib/api/wechat'
+import { getMessages, getSessions } from '@/lib/api/chat'
 
 // 简化的存储实现：使用 localStorage（支持 session 持久化）
 // 如果需要更安全的存储（如加密），未来可以切换到 @tauri-apps/plugin-store
@@ -122,10 +122,7 @@ export const useChatStore = create<ChatState>()(
     }
 
     try {
-      const { invoke } = await import('@tauri-apps/api/core')
-      const sessions = await invoke<ChatSession[]>('get_sessions', {
-        accountId: selectedAccount.accountId,
-      })
+      const sessions = await getSessions(selectedAccount.accountId)
       set({ sessions })
     } catch (error) {
       console.error('加载会话列表失败:', error)

@@ -1,14 +1,13 @@
-
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import type { McpServeConfig } from "@/lib/mcp-serve-api";
+import type { McpServeConfig } from "@/stores/useMcpStore";
 import { ItemLink } from "./mcp-profile-item";
 
 type McpProfileListProps = {
   configs: McpServeConfig[];
-  selectedId: number | null;
-  onSelect: (id: number) => void;
-  onDelete: (id: number) => void;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  onDelete: (id: string | number) => void;
   onAdd: () => void;
 };
 
@@ -33,8 +32,7 @@ export function McpProfileList({
             </p>
           ) : (
             configs.map((cfg) => (
-              
-              <ItemLink key={cfg.id} cfg={cfg} onSelect={onSelect}  />
+              <ItemLink key={cfg.id} cfg={cfg} onSelect={onSelect} />
             ))
           )}
         </div>

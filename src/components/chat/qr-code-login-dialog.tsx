@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { startLoginStream, WechatLoginEvent, LoginError } from "@/lib/wechat-api";
+import { startLoginStream, WechatLoginEvent, LoginError } from "@/lib/api/wechat";
 import encodeQR from "qr";
 import { UnlistenFn } from "@tauri-apps/api/event";
 
