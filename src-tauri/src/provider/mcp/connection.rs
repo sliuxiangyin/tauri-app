@@ -423,18 +423,171 @@ impl McpConnection {
         }
     }
 
+    // ─── Windows PATH 辅助函数 ──────────────────────────────────────────
+
+    /// 构建 Windows 上需要优先注入到 PATH 的关键目录列表
+    fn build_windows_key_paths() -> Vec<std::path::PathBuf> {
+        let mut paths = Vec::new();
+
+        // 1. %APPDATA%\npm（npm 全局包路径，如 npx.cmd 所在）
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            let npm_path = std::path::Path::new(&appdata).join("npm");
+            if npm_path.exists() {
+                paths.push(npm_path);
+            }
+        }
+
+        // 2. nodejs 安装目录（npx.exe/npm.exe 所在）
+        let nodejs_candidates: Vec<std::path::PathBuf> =
+            if let Ok(pf) = std::env::var("ProgramFiles") {
+                vec![
+                    std::path::Path::new(&pf).join("nodejs"),
+                    std::path::PathBuf::from("D:\\Program Files\\nodejs"),
+                    std::path::PathBuf::from("C:\\Program Files\\nodejs"),
+                ]
+            } else {
+                vec![
+                    std::path::PathBuf::from("D:\\Program Files\\nodejs"),
+                    std::path::PathBuf::from("C:\\Program Files\\nodejs"),
+                ]
+            };
+        for p in &nodejs_candidates {
+            if p.exists() {
+                paths.push(p.clone());
+                break; // 找到一个就足够
+            }
+        }
+
+        paths
+    }
+
+    /// 在 Windows 上解析命令的实际可执行路径
+    ///
+    /// Windows 命令（如 `npx`）通常是 `.cmd` 批处理文件，
+    /// CreateProcessW 无法直接执行，必须通过 `cmd /c` 调用。
+    ///
+    /// 返回 `(original_resolved, cmd_wrapper_exe, args_for_cmd)`：
+    /// - `original_resolved`：命令在 PATH 中解析后的完整路径（如果需要）
+    /// - `cmd_wrapper_exe`：Some(exe) 表示需要通过 `cmd /c exe args` 执行
+    /// - `cmd_wrapper_exe`：None 表示是普通 exe，可直接执行
+    fn resolve_windows_command(
+        command: &str,
+        args: &[String],
+        env: &HashMap<String, String>,
+    ) -> (Option<std::path::PathBuf>, Option<String>, Vec<String>) {
+        // 如果命令包含路径分隔符或扩展名，直接返回
+        let cmd_path = std::path::Path::new(command);
+        if cmd_path.parent().map_or(false, |p| !p.as_os_str().is_empty())
+            || cmd_path.extension().is_some()
+        {
+            return (None, None, args.to_vec());
+        }
+
+        // 获取当前进程可见的 PATH（已注入 key_paths 后的版本）
+        let current_path = std::env::var_os("PATH").unwrap_or_default();
+
+        // 从用户 env 覆盖（如果用户指定了 PATH）
+        let search_path = env
+            .get("PATH")
+            .map(std::env::split_paths)
+            .map(Iterator::collect::<Vec<_>>)
+            .unwrap_or_else(|| std::env::split_paths(&current_path).collect());
+
+        // 查找命令对应的文件（尝试多种扩展名）
+        for dir in &search_path {
+            for ext in &["", ".cmd", ".bat", ".exe", ".com"] {
+                let candidate = dir.join(format!("{}{}", command, ext));
+                if candidate.exists() {
+                    let ext_lower = ext.to_lowercase();
+                    // .cmd/.bat 批处理文件必须通过 cmd /c 执行
+                    if ext_lower == ".cmd" || ext_lower == ".bat" {
+                        let exe_name = candidate.file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(command)
+                            .to_string();
+                        return (Some(candidate), Some(exe_name), args.to_vec());
+                    }
+                    // .exe/.com 可以直接执行，但仍然用 cmd /c 保持一致
+                    return (Some(candidate), None, args.to_vec());
+                }
+            }
+        }
+
+        // 未找到匹配文件，返回原始值
+        (None, None, args.to_vec())
+    }
+
     /// 构建 Transport 并建立 serve_client 连接
     async fn build_and_serve(&self) -> McpResult<RunningService<RoleClient, ()>> {
         match &self.config {
             TransportConfig::Stdio { command, args, env } => {
                 use rmcp::transport::child_process::TokioChildProcess;
 
-                let mut cmd = tokio::process::Command::new(command);
-                cmd.args(args);
-                for (k, v) in env {
-                    cmd.env(k, v);
-                }
-                cmd.kill_on_drop(true);
+                // ── 构建 tokio::Command ──────────────────────────────────
+                let cmd = if cfg!(target_os = "windows") {
+                    let mut full_cmd = tokio::process::Command::new("cmd");
+                    full_cmd.arg("/c");
+
+                    // 1. 设置 PATH（注入 npm/nodejs 路径）
+                    let key_paths = Self::build_windows_key_paths();
+                    if !key_paths.is_empty() {
+                        if let Some(current_path) = std::env::var_os("PATH") {
+                            let mut paths = key_paths;
+                            for p in std::env::split_paths(&current_path) {
+                                if !paths.contains(&p) {
+                                    paths.push(p);
+                                }
+                            }
+                            let full_path =
+                                std::env::join_paths(&paths).unwrap_or_else(|_| current_path.clone());
+                            debug!(
+                                "[MCP:{}] PATH will be set to: {}",
+                                self.name,
+                                full_path.to_string_lossy()
+                            );
+                            full_cmd.env("PATH", &full_path);
+                        }
+                    }
+
+                    // 2. 查找命令实际路径（resolve .cmd/.bat/.exe）
+                    let resolved = Self::resolve_windows_command(command, args, env);
+                    debug!(
+                        "[MCP:{}] resolved command: resolved={:?} cmd_exe={:?}",
+                        self.name,
+                        resolved.0,
+                        resolved.1
+                    );
+
+                    if resolved.1.is_some() {
+                        // 批处理文件（.cmd/.bat）→ 通过 cmd /c 执行
+                        // args: ["/c", "npx", "-y", "@modelcontextprotocol/server-playwright"]
+                        full_cmd.arg(&resolved.1.unwrap());
+                        for a in &resolved.2 {
+                            full_cmd.arg(a);
+                        }
+                    } else {
+                        // 普通命令，直接执行
+                        full_cmd.arg(command);
+                        full_cmd.args(args);
+                    }
+
+                    // 3. 注入用户自定义 env
+                    for (k, v) in env {
+                        full_cmd.env(k, v);
+                    }
+
+                    full_cmd.kill_on_drop(true);
+                    full_cmd
+                } else {
+                    // 非 Windows 平台：直接执行
+                    let mut full_cmd = tokio::process::Command::new(command);
+                    full_cmd.args(args);
+                    for (k, v) in env {
+                        full_cmd.env(k, v);
+                    }
+                    full_cmd.kill_on_drop(true);
+                    full_cmd
+                };
 
                 let transport = TokioChildProcess::new(cmd).map_err(|e| {
                     McpError::Transport(format!("failed to spawn child process: {}", e))
@@ -484,5 +637,134 @@ impl Drop for McpConnection {
             // 无法在 Drop 中执行 async，依赖 RunningService 的 Drop 实现清理
             // RunningService 的 Drop 会取消后台任务并关闭 transport
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+    use std::path::Path;
+
+    /// 测试：验证 %APPDATA%\npm 路径是否可访问
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn test_npm_path_exists() {
+        let appdata = std::env::var("APPDATA").expect("APPDATA not set");
+        let npm_path = Path::new(&appdata).join("npm");
+        assert!(
+            npm_path.exists(),
+            "npm path does not exist: {}",
+            npm_path.display()
+        );
+        println!("npm_path exists: {}", npm_path.display());
+    }
+
+    /// 测试：验证 npx 可执行文件是否存在（多个可能路径）
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn test_npx_exe_exists() {
+        // 可能存放 npx 的目录
+        let search_paths: Vec<_> = vec![
+            Path::new(&std::env::var("APPDATA").unwrap()).join("npm"),
+            std::path::PathBuf::from("D:\\Program Files\\nodejs"),
+            std::path::PathBuf::from("C:\\Program Files\\nodejs"),
+        ];
+
+        let mut found = false;
+        for base in &search_paths {
+            if !base.exists() {
+                continue;
+            }
+            for ext in &["cmd", "exe", "bat"] {
+                let npx_path = base.join("npx").with_extension(*ext);
+                if npx_path.exists() {
+                    println!("npx found: {}", npx_path.display());
+                    found = true;
+                    break;
+                }
+            }
+            if found {
+                break;
+            }
+        }
+        assert!(found, "npx not found in any of: {:?}", search_paths);
+    }
+
+    /// 测试：打印当前 PATH 中的所有路径
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn test_print_current_path() {
+        let path = std::env::var("PATH").expect("PATH not set");
+        let paths: Vec<_> = std::env::split_paths(&path).collect();
+        println!("\n=== Current PATH ({} entries) ===", paths.len());
+        for (i, p) in paths.iter().enumerate() {
+            let exists = p.exists();
+            println!("{:2}. [{}] {}", i + 1, if exists { "OK" } else { "MISS" }, p.display());
+        }
+        println!("=================================\n");
+
+        // 验证 %APPDATA%\npm 是否在 PATH 中
+        let appdata = std::env::var("APPDATA").expect("APPDATA not set");
+        let npm_path = Path::new(&appdata).join("npm");
+        let npm_in_path = paths.iter().any(|p| p == &npm_path);
+        println!(
+            "%APPDATA%\\npm in PATH: {} ({})\n",
+            if npm_in_path { "YES" } else { "NO" },
+            npm_path.display()
+        );
+    }
+
+    /// 测试：验证 PATH 去重后路径数量是否减少
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn test_path_deduplication() {
+        let path = std::env::var("PATH").expect("PATH not set");
+        let paths: Vec<_> = std::env::split_paths(&path).collect();
+        let unique: HashSet<_> = paths.iter().collect();
+        println!(
+            "Original paths: {}, Unique: {} (duplicates: {})",
+            paths.len(),
+            unique.len(),
+            paths.len() - unique.len()
+        );
+        assert_eq!(paths.len(), unique.len(), "PATH should not have duplicates");
+    }
+
+    /// 测试：验证 npm path 会被追加到 PATH 前面
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn test_npm_path_prepended() {
+        let paths = Self::build_windows_key_paths();
+        assert!(
+            !paths.is_empty(),
+            "build_windows_key_paths should return at least one path"
+        );
+        let first = &paths[0];
+        println!(
+            "First key_path: {}",
+            first.display()
+        );
+        assert!(
+            first.exists(),
+            "key path should exist: {}",
+            first.display()
+        );
+    }
+
+    /// 测试：resolve_windows_command 能找到 npx.cmd
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn test_resolve_windows_command_finds_npx() {
+        use std::collections::HashMap;
+        let env = HashMap::new();
+        let (resolved, cmd_exe, args) =
+            Self::resolve_windows_command("npx", &["-y".to_string(), "some-package".to_string()], &env);
+        println!("resolved={:?}, cmd_exe={:?}, args={:?}", resolved, cmd_exe, args);
+        // cmd_exe 应该是 Some("npx.cmd")
+        assert!(
+            cmd_exe.is_some(),
+            "npx should be resolved to a cmd wrapper"
+        );
+        println!("npx resolved to cmd wrapper: {}", cmd_exe.unwrap());
     }
 }

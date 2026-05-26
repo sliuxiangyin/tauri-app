@@ -25,26 +25,27 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { X } from 'lucide-react';
-import { 
-  ChevronDown, 
-  ChevronRight, 
-  Link2, 
-  Bell, 
-  RefreshCw, 
-  Pencil, 
-  Trash2, 
-  Settings, 
+import {
+  ChevronDown,
+  ChevronRight,
+  Link2,
+  Bell,
+  RefreshCw,
+  Pencil,
+  Trash2,
+  Settings,
   Plus,
   Loader2
 } from 'lucide-react';
-import { 
-  getAllMcps, 
-  createMcp, 
-  updateMcp, 
-  deleteMcp, 
+import {
+  getAllMcps,
+  createMcp,
+  updateMcp,
+  deleteMcp,
   toggleMcpStatus,
-  McpDto 
+  McpDto
 } from '@/lib/api/mcp';
+import { ScrollArea } from '@/components/ui/scroll-area';
 
 export default function McpPage() {
   const [mcps, setMcps] = useState<McpDto[]>([]);
@@ -54,7 +55,7 @@ export default function McpPage() {
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [currentMcp, setCurrentMcp] = useState<McpDto | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  
+
   // 表单状态
   const [formName, setFormName] = useState('');
   const [configJson, setConfigJson] = useState('');
@@ -66,7 +67,7 @@ export default function McpPage() {
     setIsLoading(true);
     try {
       const data = await getAllMcps();
-      console.log('Loaded MCPs:', data); 
+      console.log('Loaded MCPs:', data);
       setMcps(data);
     } catch (error) {
       console.error('加载 MCP 列表失败:', error);
@@ -123,7 +124,7 @@ export default function McpPage() {
   // 提交编辑
   const handleSubmitEdit = async () => {
     if (!currentMcp) return;
-    
+
     setIsSubmitting(true);
     try {
       await updateMcp(currentMcp.name, configJson.trim(), formStatus);
@@ -147,7 +148,7 @@ export default function McpPage() {
   // 确认删除
   const handleConfirmDelete = async () => {
     if (!currentMcp) return;
-    
+
     setIsSubmitting(true);
     try {
       await deleteMcp(currentMcp.name);
@@ -183,11 +184,15 @@ export default function McpPage() {
     setExpandedCards(newExpanded);
   };
 
-  // 解析工具列表
+  // 解析工具列表 - 兼容字符串数组和对象数组格式
   const parseTools = (tools?: string) => {
     if (!tools) return [];
     try {
-      return JSON.parse(tools);
+      const parsed = JSON.parse(tools);
+      if (Array.isArray(parsed)) {
+        return parsed.map(tool => typeof tool === 'string' ? tool : tool.name);
+      }
+      return [];
     } catch {
       return [];
     }
@@ -204,8 +209,8 @@ export default function McpPage() {
   };
 
   return (
-    <div className="min-h-screen w-full bg-background text-foreground p-8 font-sans">
-      
+    <div className="flex  w-full  flex-col h-screen bg-background text-foreground p-8 font-sans">
+
       {/* 头部标题区 */}
       <div className="flex justify-between items-start mb-8">
         <div>
@@ -227,100 +232,111 @@ export default function McpPage() {
         </div>
       </div>
 
-      {/* 加载状态 */}
-      {isLoading ? (
-        <div className="flex items-center justify-center py-12">
-          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
-          <span className="ml-2 text-muted-foreground">加载中...</span>
-        </div>
-      ) : mcps.length === 0 ? (
-        <div className="text-center py-12 text-muted-foreground">
-          暂无 MCP 服务，点击"添加"创建一个
-        </div>
-      ) : (
-        /* MCP 服务卡片列表 */
-        <div className="space-y-4">
-          {mcps.map((mcp) => {
-            const tools = parseTools(mcp.tools);
-            const urlOrCommand = parseUrl(mcp.config);
-            const isExpanded = expandedCards.has(mcp.id);
-            
-            return (
-              <Collapsible 
-                key={mcp.id}
-                open={isExpanded}
-                onOpenChange={() => toggleCard(mcp.id)}
-                className="bg-card border border-border rounded-xl overflow-hidden shadow-sm"
-              >
-                {/* 卡片 Header */}
-                <div className="flex items-center justify-between p-3.5 px-4 bg-card">
-                  <div className="flex items-center gap-3">
-                    <CollapsibleTrigger asChild>
-                      <div className="cursor-pointer text-muted-foreground hover:text-foreground transition-colors">
-                        {isExpanded ? <ChevronDown className="w-[18px] h-[18px]" /> : <ChevronRight className="w-[18px] h-[18px]" />}
-                      </div>
-                    </CollapsibleTrigger>
-                    <Link2 className="w-[18px] h-[18px] text-primary" />
-                    <span className="text-sm font-medium text-foreground">{mcp.name}</span>
-                    <span className={`text-xs px-2 py-0.5 rounded ${
-                      mcp.status === 'enable' 
-                        ? 'bg-green-100 text-green-700' 
-                        : 'bg-gray-100 text-gray-500'
-                    }`}>
-                      {mcp.status === 'enable' ? '已启用' : '已禁用'}
-                    </span>
-                  </div>
-                  
-                  {/* 右侧操作区 */}
-                  <div className="flex items-center gap-4">
-                    <div className="flex items-center gap-3.5 mr-2">
-                      <Bell className="w-4 h-4 text-muted-foreground cursor-pointer hover:text-foreground transition-colors" />
-                      <RefreshCw className="w-4 h-4 text-muted-foreground cursor-pointer hover:text-foreground transition-colors" onClick={() => loadMcps()} />
-                      <Pencil className="w-4 h-4 text-muted-foreground cursor-pointer hover:text-foreground transition-colors" onClick={() => handleOpenEditDrawer(mcp)} />
-                      <Trash2 className="w-4 h-4 text-muted-foreground cursor-pointer hover:text-foreground transition-colors" onClick={() => handleOpenDelete(mcp)} />
-                    </div>
-                    <Switch 
-                      checked={mcp.status === 'enable'}
-                      onCheckedChange={() => handleToggleStatus(mcp)}
-                    />
-                  </div>
-                </div>
-
-                {/* 卡片展开内容 */}
-                <CollapsibleContent className="px-5 pb-6 pt-2">
-                  {/* URL/Command 区域 */}
-                  <div className="mb-6">
-                    <div className="text-muted-foreground text-sm mb-1.5">配置</div>
-                    <div className="text-foreground text-[13px] tracking-wide font-mono bg-muted p-2 rounded">
-                      {urlOrCommand}
-                    </div>
-                  </div>
-
-                  {/* 工具列表区域 */}
-                  <div className="mb-8">
-                    <div className="text-muted-foreground text-sm mb-3">工具({tools.length})</div>
-                    {tools.length > 0 ? (
-                      <div className="flex flex-col gap-2.5">
-                        {tools.map((tool: string, index: number) => (
-                          <div key={index} className="grid grid-cols-[1fr_2fr] gap-4 text-[13px] items-center">
-                            <div className="flex items-center gap-2.5 text-foreground">
-                              <Settings className="w-4 h-4 text-muted-foreground" />
-                              <span>{tool}</span>
-                            </div>
+      {/* 内容区域 - flex-1 占据剩余空间 */}
+      <div className="flex-1 overflow-hidden">
+        {isLoading ? (
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+            <span className="ml-2 text-muted-foreground">加载中...</span>
+          </div>
+        ) : mcps.length === 0 ? (
+          <div className="text-center py-12 text-muted-foreground">
+            暂无 MCP 服务，点击"添加"创建一个
+          </div>
+        ) : (
+          /* MCP 服务卡片列表 */
+          <ScrollArea className="h-full w-full">
+            <div className="space-y-4 ">
+              {mcps.map((mcp) => {
+                const tools = parseTools(mcp.tools);
+                const urlOrCommand = parseUrl(mcp.config);
+                const isExpanded = expandedCards.has(mcp.id);
+                return (
+                  <Collapsible
+                    key={mcp.id}
+                    open={isExpanded}
+                    onOpenChange={() => toggleCard(mcp.id)}
+                    className="bg-card border border-border rounded-xl overflow-hidden shadow-sm"
+                  >
+                    {/* 卡片 Header */}
+                    <div className="flex items-center justify-between p-3.5 px-4 bg-card">
+                      <div className="flex items-center gap-3">
+                        <CollapsibleTrigger asChild>
+                          <div className="cursor-pointer text-muted-foreground hover:text-foreground transition-colors">
+                            {isExpanded ? <ChevronDown className="w-[18px] h-[18px]" /> : <ChevronRight className="w-[18px] h-[18px]" />}
                           </div>
-                        ))}
+                        </CollapsibleTrigger>
+                        <Link2 className="w-[18px] h-[18px] text-primary" />
+                        <span className="text-sm font-medium text-foreground">{mcp.name}</span>
+                        <span className={`text-xs px-2 py-0.5 rounded ${
+                          mcp.operating === 'running' ? 'bg-green-100 text-green-700'
+                            : mcp.operating === 'connecting' ? 'bg-blue-100 text-blue-700'
+                            : mcp.operating === 'failed' ? 'bg-red-100 text-red-700'
+                            : 'bg-gray-100 text-gray-500'
+                          }`}>
+                          {mcp.operating === 'running' ? '已连接'
+                            : mcp.operating === 'connecting' ? '连接中'
+                            : mcp.operating === 'failed' ? '连接失败'
+                            : '已断开'}
+                        </span>
+                        {mcp.operating === 'failed' && mcp.error_msg && (
+                          <span className="text-xs text-red-600 ml-1 truncate max-w-[200px]" title={mcp.error_msg}>
+                            ({mcp.error_msg.length > 20 ? mcp.error_msg.slice(0, 20) + '...' : mcp.error_msg})
+                          </span>
+                        )}
                       </div>
-                    ) : (
-                      <div className="text-muted-foreground text-sm">暂无工具</div>
-                    )}
-                  </div>
-                </CollapsibleContent>
-              </Collapsible>
-            );
-          })}
-        </div>
-      )}
 
+                      {/* 右侧操作区 */}
+                      <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-3.5 mr-2">
+                          <RefreshCw className="w-4 h-4 text-muted-foreground cursor-pointer hover:text-foreground transition-colors" onClick={() => loadMcps()} />
+                          <Pencil className="w-4 h-4 text-muted-foreground cursor-pointer hover:text-foreground transition-colors" onClick={() => handleOpenEditDrawer(mcp)} />
+                          <Trash2 className="w-4 h-4 text-muted-foreground cursor-pointer hover:text-foreground transition-colors" onClick={() => handleOpenDelete(mcp)} />
+                        </div>
+                        <Switch
+                          checked={mcp.status === 'enable'}
+                          onCheckedChange={() => handleToggleStatus(mcp)}
+                        />
+                      </div>
+                    </div>
+
+                    {/* 卡片展开内容 */}
+                    <CollapsibleContent className="px-5 pb-6 pt-2">
+                      {/* URL/Command 区域 */}
+                      <div className="mb-6">
+                        <div className="text-muted-foreground text-sm mb-1.5">配置</div>
+                        <div className="text-foreground text-[13px] tracking-wide font-mono bg-muted p-2 rounded">
+                          {urlOrCommand}
+                        </div>
+                      </div>
+
+                      {/* 工具列表区域 */}
+                      <div className="mb-8">
+                        <div className="text-muted-foreground text-sm mb-3">工具({tools.length})</div>
+                        {tools.length > 0 ? (
+                          <div className="flex flex-col gap-2.5">
+                            {tools.map((tool: string, index: number) => (
+                              <div key={index} className="grid grid-cols-[1fr_2fr] gap-4 text-[13px] items-center">
+                                <div className="flex items-center gap-2.5 text-foreground">
+                                  <Settings className="w-4 h-4 text-muted-foreground" />
+                                  <span>{tool}</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="text-muted-foreground text-sm">暂无工具</div>
+                        )}
+                      </div>
+                    </CollapsibleContent>
+                  </Collapsible>
+                );
+              })}
+            </div>
+          </ScrollArea>
+        )}
+      </div>
+      <div className="h-6"></div>  
       {/* 添加 MCP 服务 Drawer */}
       <Drawer open={isAddDrawerOpen} onOpenChange={setIsAddDrawerOpen} direction="right">
         <DrawerContent className="w-[500px] max-w-full">
@@ -374,8 +390,8 @@ export default function McpPage() {
             <DrawerClose asChild>
               <Button variant="outline">取消</Button>
             </DrawerClose>
-            <Button 
-              variant="default" 
+            <Button
+              variant="default"
               onClick={handleSubmitAdd}
               disabled={isSubmitting}
             >
@@ -439,8 +455,8 @@ export default function McpPage() {
             <DrawerClose asChild>
               <Button variant="outline">取消</Button>
             </DrawerClose>
-            <Button 
-              variant="default" 
+            <Button
+              variant="default"
               onClick={handleSubmitEdit}
               disabled={isSubmitting}
             >
@@ -473,8 +489,8 @@ export default function McpPage() {
             <DrawerClose asChild>
               <Button variant="outline">取消</Button>
             </DrawerClose>
-            <Button 
-              variant="destructive" 
+            <Button
+              variant="destructive"
               onClick={handleConfirmDelete}
               disabled={isSubmitting}
             >

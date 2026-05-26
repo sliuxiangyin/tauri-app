@@ -9,8 +9,10 @@
 //! 设计原则：纯被动式 — 所有连接由前端显式触发。
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use sea_orm::DatabaseConnection;
+use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
 use crate::provider::mcp::{McpManager, TransportConfig};
@@ -102,6 +104,61 @@ async fn after_connect_failure(
     }
 }
 
+// ─── 异步连接任务 ─────────────────────────────────────────────
+
+/// 异步执行 MCP 连接并写入结果
+///
+/// 封装为独立任务，避免阻塞请求处理流程。
+/// 连接完成后根据结果调用 after_connect_success 或 after_connect_failure。
+///
+/// 注意：此函数内部 clone 了 db 和 mcp，确保任务独立持有这些资源。
+pub fn spawn_connect_task(
+    db: Arc<DatabaseConnection>,
+    mcp: Arc<McpManager>,
+    name: String,
+    transport: TransportConfig,
+) -> JoinHandle<()> {
+    let name_clone = name.clone();
+    tokio::spawn(async move {
+        info!("[McpService] spawn_connect_task: '{}' starting in background", name_clone);
+        match mcp.connect(&name_clone, transport).await {
+            Ok(_) => {
+                after_connect_success(&db, &mcp, &name_clone).await;
+                info!("[McpService] spawn_connect_task: '{}' succeeded", name_clone);
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+                after_connect_failure(&db, &name_clone, &err_str).await;
+                warn!("[McpService] spawn_connect_task: '{}' failed: {}", name_clone, err_str);
+            }
+        }
+    })
+}
+
+/// 异步执行 MCP 重启并写入结果
+pub fn spawn_restart_task(
+    db: Arc<DatabaseConnection>,
+    mcp: Arc<McpManager>,
+    name: String,
+    transport: TransportConfig,
+) -> JoinHandle<()> {
+    let name_clone = name.clone();
+    tokio::spawn(async move {
+        info!("[McpService] spawn_restart_task: '{}' starting in background", name_clone);
+        match mcp.restart(&name_clone, transport).await {
+            Ok(_) => {
+                after_connect_success(&db, &mcp, &name_clone).await;
+                info!("[McpService] spawn_restart_task: '{}' succeeded", name_clone);
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+                after_connect_failure(&db, &name_clone, &err_str).await;
+                warn!("[McpService] spawn_restart_task: '{}' failed: {}", name_clone, err_str);
+            }
+        }
+    })
+}
+
 /// 断开后写入 DB
 async fn after_disconnect(db: &DatabaseConnection, name: &str) {
     let payload = UpdateMcpPayload {
@@ -156,10 +213,12 @@ pub async fn get_mcp(
 
 /// 创建 MCP 配置
 ///
-/// 流程：写 DB → 若 status=enable 则连接 → 写回运行结果
+/// 流程：写 DB → 若 status=enable 则异步连接 → 立即返回 optimistic 状态
+///
+/// 注意：连接在后台异步执行，operating 最终状态由后台任务写入 DB
 pub async fn create_mcp(
-    db: &DatabaseConnection,
-    mcp: &McpManager,
+    db: Arc<DatabaseConnection>,
+    mcp: Arc<McpManager>,
     name: String,
     config: String,
     status: String,
@@ -174,35 +233,32 @@ pub async fn create_mcp(
         config,
         status,
     };
-    let dto = db_mcp::create_mcp(db, payload).await?;
+    let dto = db_mcp::create_mcp(&db, payload).await?;
 
-    // 2. 若 enable，先标 connecting 再尝试连接
+    // 2. 若 enable，异步执行连接（optimistic response）
     if is_enable {
-        set_operating_connecting(db, &dto.name).await;
-        match mcp.connect(&dto.name, transport).await {
-            Ok(_) => after_connect_success(db, mcp, &dto.name).await,
-            Err(e) => after_connect_failure(db, &dto.name, &e.to_string()).await,
-        }
+        set_operating_connecting(&db, &dto.name).await;
+        spawn_connect_task(Arc::clone(&db), Arc::clone(&mcp), dto.name.clone(), transport);
     }
 
-    // 3. 返回最新状态
-    get_mcp(db, mcp, &dto.name)
+    // 3. 返回 optimistic 状态（前端需轮询获取最终状态）
+    get_mcp(&db, &mcp, &dto.name)
         .await
         .map(|opt| opt.expect("just created MCP must exist"))
 }
 
 /// 更新 MCP 配置
 ///
-/// 流程：读旧配置 → 写 DB → 若 config/status 变则执行运行时操作 → 写回结果
+/// 流程：读旧配置 → 写 DB → 若 config/status 变则异步连接/重启 → 立即返回 optimistic 状态
 pub async fn update_mcp(
-    db: &DatabaseConnection,
-    mcp: &McpManager,
+    db: Arc<DatabaseConnection>,
+    mcp: Arc<McpManager>,
     name: String,
     config: Option<String>,
     status: Option<String>,
 ) -> Result<McpServiceDto, String> {
     // 1. 读旧配置
-    let old = db_mcp::get_mcp_by_name(db, &name)
+    let old = db_mcp::get_mcp_by_name(&db, &name)
         .await?
         .ok_or_else(|| format!("MCP not found: {}", name))?;
 
@@ -215,9 +271,9 @@ pub async fn update_mcp(
         status: status.clone(),
         ..Default::default()
     };
-    db_mcp::update_mcp_by_name(db, &name, update_payload).await?;
+    db_mcp::update_mcp_by_name(&db, &name, update_payload).await?;
 
-    // 3. 判断是否需要运行时操作
+    // 3. 判断是否需要运行时操作（异步执行）
     let config_changed = config.is_some() && config.as_deref() != Some(&old.config);
     let status_changed = status.is_some() && status.as_deref() != Some(&old.status);
     let effective_status = new_status.as_deref().unwrap_or(&old.status);
@@ -228,33 +284,27 @@ pub async fn update_mcp(
             let transport = parse_transport_config(
                 new_config.as_deref().unwrap_or(&old.config),
             )?;
-            set_operating_connecting(db, &name).await;
-            match mcp.restart(&name, transport).await {
-                Ok(_) => after_connect_success(db, mcp, &name).await,
-                Err(e) => after_connect_failure(db, &name, &e.to_string()).await,
-            }
+            set_operating_connecting(&db, &name).await;
+            spawn_restart_task(Arc::clone(&db), Arc::clone(&mcp), name.clone(), transport);
         } else {
             // config 变了但 status=disable → 只断开
             let _ = mcp.disconnect(&name).await;
-            after_disconnect(db, &name).await;
+            after_disconnect(&db, &name).await;
         }
     } else if status_changed {
         // 仅 status 变了
         if effective_status == "enable" {
             let transport = parse_transport_config(&old.config)?;
-            set_operating_connecting(db, &name).await;
-            match mcp.connect(&name, transport).await {
-                Ok(_) => after_connect_success(db, mcp, &name).await,
-                Err(e) => after_connect_failure(db, &name, &e.to_string()).await,
-            }
+            set_operating_connecting(&db, &name).await;
+            spawn_connect_task(Arc::clone(&db), Arc::clone(&mcp), name.clone(), transport);
         } else {
             let _ = mcp.disconnect(&name).await;
-            after_disconnect(db, &name).await;
+            after_disconnect(&db, &name).await;
         }
     }
 
-    // 4. 返回最新状态
-    get_mcp(db, mcp, &name)
+    // 4. 返回 optimistic 状态
+    get_mcp(&db, &mcp, &name)
         .await
         .map(|opt| opt.expect("just updated MCP must exist"))
 }
@@ -279,14 +329,14 @@ pub async fn delete_mcp(
 
 /// 切换 MCP 状态
 ///
-/// 流程：toggle DB status → enable则连接 / disable则断开 → 写回结果
+/// 流程：toggle DB status → enable则异步连接 / disable则断开 → 立即返回 optimistic 状态
 pub async fn toggle_mcp_status(
-    db: &DatabaseConnection,
-    mcp: &McpManager,
+    db: Arc<DatabaseConnection>,
+    mcp: Arc<McpManager>,
     name: String,
 ) -> Result<McpServiceDto, String> {
     // 1. 读当前配置
-    let current = db_mcp::get_mcp_by_name(db, &name)
+    let current = db_mcp::get_mcp_by_name(&db, &name)
         .await?
         .ok_or_else(|| format!("MCP not found: {}", name))?;
 
@@ -301,23 +351,20 @@ pub async fn toggle_mcp_status(
         status: Some(new_status.to_string()),
         ..Default::default()
     };
-    db_mcp::update_mcp_by_name(db, &name, update_payload).await?;
+    db_mcp::update_mcp_by_name(&db, &name, update_payload).await?;
 
-    // 3. 运行时操作
+    // 3. 运行时操作（enable 时异步连接）
     if new_status == "enable" {
         let transport = parse_transport_config(&current.config)?;
-        set_operating_connecting(db, &name).await;
-        match mcp.connect(&name, transport).await {
-            Ok(_) => after_connect_success(db, mcp, &name).await,
-            Err(e) => after_connect_failure(db, &name, &e.to_string()).await,
-        }
+        set_operating_connecting(&db, &name).await;
+        spawn_connect_task(Arc::clone(&db), Arc::clone(&mcp), name.clone(), transport);
     } else {
         let _ = mcp.disconnect(&name).await;
-        after_disconnect(db, &name).await;
+        after_disconnect(&db, &name).await;
     }
 
-    // 4. 返回最新状态
-    get_mcp(db, mcp, &name)
+    // 4. 返回 optimistic 状态
+    get_mcp(&db, &mcp, &name)
         .await
         .map(|opt| opt.expect("just toggled MCP must exist"))
 }

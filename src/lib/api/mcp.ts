@@ -17,7 +17,6 @@ export interface McpDto {
 // 获取所有 MCP 配置
 export async function getAllMcps(): Promise<McpDto[]> {
   let data = await invoke<McpDto[]>('get_all_mcps');
-  console.log("data: ", data);
   return data;
 }
 

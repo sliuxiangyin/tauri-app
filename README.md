@@ -9,3 +9,12 @@ This template should help get you started developing with Tauri, React and Types
 # 发布
 git tag v1.0.0
 git push origin v1.0.0
+
+```JSON
+
+{"transportType": "streamableHttp",
+"url": "https://baike.baidu.com/mcp/streamable?ak={ak}&sk={sk}"
+}
+
+```
+

@@ -31,7 +31,7 @@ pub async fn get_mcp(
     mcp_service::get_mcp(&db, &mcp_manager, &name).await
 }
 
-/// 创建 MCP 配置（自动解析 transport + 若 enable 则连接）
+/// 创建 MCP 配置（自动解析 transport + 若 enable 则异步连接）
 #[tauri::command]
 pub async fn create_mcp(
     db_state: State<'_, DbState>,
@@ -41,10 +41,10 @@ pub async fn create_mcp(
     status: String,
 ) -> Result<McpServiceDto, String> {
     let db = db_state.get().await.map_err(|e| e.to_string())?;
-    mcp_service::create_mcp(&db, &mcp_manager, name, config, status).await
+    mcp_service::create_mcp(db, Arc::clone(&mcp_manager), name, config, status).await
 }
 
-/// 更新 MCP 配置（若 config/status 变更则执行运行时操作）
+/// 更新 MCP 配置（若 config/status 变更则异步连接/重启）
 #[tauri::command]
 pub async fn update_mcp(
     db_state: State<'_, DbState>,
@@ -54,7 +54,7 @@ pub async fn update_mcp(
     status: Option<String>,
 ) -> Result<McpServiceDto, String> {
     let db = db_state.get().await.map_err(|e| e.to_string())?;
-    mcp_service::update_mcp(&db, &mcp_manager, name, config, status).await
+    mcp_service::update_mcp(db, Arc::clone(&mcp_manager), name, config, status).await
 }
 
 /// 删除 MCP 配置（断开连接 + 删除 DB）
@@ -68,7 +68,7 @@ pub async fn delete_mcp(
     mcp_service::delete_mcp(&db, &mcp_manager, name).await
 }
 
-/// 切换 MCP 状态（enable ↔ disable，自动连接/断开）
+/// 切换 MCP 状态（enable ↔ disable，自动异步连接/断开）
 #[tauri::command]
 pub async fn toggle_mcp_status(
     db_state: State<'_, DbState>,
@@ -76,7 +76,7 @@ pub async fn toggle_mcp_status(
     name: String,
 ) -> Result<McpServiceDto, String> {
     let db = db_state.get().await.map_err(|e| e.to_string())?;
-    mcp_service::toggle_mcp_status(&db, &mcp_manager, name).await
+    mcp_service::toggle_mcp_status(db, Arc::clone(&mcp_manager), name).await
 }
 
 /// 显式连接一个 MCP 服务（不改变 status，纯运行时操作）
