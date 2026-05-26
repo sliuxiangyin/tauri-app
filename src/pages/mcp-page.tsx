@@ -66,6 +66,7 @@ export default function McpPage() {
     setIsLoading(true);
     try {
       const data = await getAllMcps();
+      console.log('Loaded MCPs:', data); 
       setMcps(data);
     } catch (error) {
       console.error('加载 MCP 列表失败:', error);

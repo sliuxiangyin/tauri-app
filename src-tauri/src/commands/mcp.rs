@@ -1,113 +1,112 @@
 //! MCP 服务配置 Command 层
-//! 提供给前端的 CRUD 接口
+//!
+//! 薄包装层 — 仅做参数转发和错误转换，业务逻辑在 services::mcp_service 中。
+
+use std::sync::Arc;
 
 use crate::db::DbState;
-use crate::services::db::mcp::{CreateMcpPayload, McpDto, UpdateMcpPayload};
-use crate::services::db::mcp as db_mcp;
+use crate::provider::mcp::McpManager;
+use crate::services::mcp_service;
+use crate::types::mcp::{McpServiceDto, ResumeResult};
 use tauri::State;
 
-/// Transport 类型常量
-const TRANSPORT_STDIO: &str = "stdio";
-const TRANSPORT_HTTP: &str = "http";
-
-/// 从 config JSON 自动解析 transport 类型
-fn parse_transport(config_json: &str) -> String {
-    // 尝试解析为 JSON 对象
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(config_json) {
-        // STDIO: 包含 command 字段
-        if value.get("command").is_some() {
-            return TRANSPORT_STDIO.to_string();
-        }
-        // HTTP: 包含 url 字段
-        if let Some(url) = value.get("url").and_then(|v| v.as_str()) {
-            if url.contains("sse") {
-                return TRANSPORT_HTTP.to_string();
-            }
-            if url.contains("streamable") {
-                return TRANSPORT_HTTP.to_string();
-            }
-            return TRANSPORT_HTTP.to_string();
-        }
-    }
-    // 默认返回 HTTP
-    TRANSPORT_HTTP.to_string()
-}
-
-/// 获取所有 MCP 配置
+/// 获取所有 MCP 配置（含运行时状态）
 #[tauri::command]
-pub async fn get_all_mcps(db_state: State<'_, DbState>) -> Result<Vec<McpDto>, String> {
+pub async fn get_all_mcps(
+    db_state: State<'_, DbState>,
+    mcp_manager: State<'_, Arc<McpManager>>,
+) -> Result<Vec<McpServiceDto>, String> {
     let db = db_state.get().await.map_err(|e| e.to_string())?;
-    db_mcp::get_all_mcps(&db).await
+    mcp_service::get_all_mcps(&db, &mcp_manager).await
 }
 
-/// 获取单个 MCP 配置
+/// 获取单个 MCP 配置（含运行时状态）
 #[tauri::command]
-pub async fn get_mcp(db_state: State<'_, DbState>, name: String) -> Result<Option<McpDto>, String> {
+pub async fn get_mcp(
+    db_state: State<'_, DbState>,
+    mcp_manager: State<'_, Arc<McpManager>>,
+    name: String,
+) -> Result<Option<McpServiceDto>, String> {
     let db = db_state.get().await.map_err(|e| e.to_string())?;
-    db_mcp::get_mcp_by_name(&db, &name).await
+    mcp_service::get_mcp(&db, &mcp_manager, &name).await
 }
 
-/// 创建 MCP 配置
+/// 创建 MCP 配置（自动解析 transport + 若 enable 则连接）
 #[tauri::command]
 pub async fn create_mcp(
     db_state: State<'_, DbState>,
+    mcp_manager: State<'_, Arc<McpManager>>,
     name: String,
-    config: String,  // JSON 字符串
+    config: String,
     status: String,
-) -> Result<McpDto, String> {
-    // 自动解析 transport
-    let transport = parse_transport(&config);
-    
-    let payload = CreateMcpPayload {
-        name,
-        transport,
-        config,
-        status,
-    };
+) -> Result<McpServiceDto, String> {
     let db = db_state.get().await.map_err(|e| e.to_string())?;
-    db_mcp::create_mcp(&db, payload).await
+    mcp_service::create_mcp(&db, &mcp_manager, name, config, status).await
 }
 
-/// 更新 MCP 配置
+/// 更新 MCP 配置（若 config/status 变更则执行运行时操作）
 #[tauri::command]
 pub async fn update_mcp(
     db_state: State<'_, DbState>,
+    mcp_manager: State<'_, Arc<McpManager>>,
     name: String,
-    config: Option<String>,  // 可选 JSON 字符串
+    config: Option<String>,
     status: Option<String>,
-) -> Result<McpDto, String> {
-    let payload = UpdateMcpPayload {
-        config,
-        status,
-        ..Default::default()
-    };
+) -> Result<McpServiceDto, String> {
     let db = db_state.get().await.map_err(|e| e.to_string())?;
-    db_mcp::update_mcp_by_name(&db, &name, payload).await
+    mcp_service::update_mcp(&db, &mcp_manager, name, config, status).await
 }
 
-/// 删除 MCP 配置
+/// 删除 MCP 配置（断开连接 + 删除 DB）
 #[tauri::command]
-pub async fn delete_mcp(db_state: State<'_, DbState>, name: String) -> Result<(), String> {
+pub async fn delete_mcp(
+    db_state: State<'_, DbState>,
+    mcp_manager: State<'_, Arc<McpManager>>,
+    name: String,
+) -> Result<(), String> {
     let db = db_state.get().await.map_err(|e| e.to_string())?;
-    db_mcp::delete_mcp_by_name(&db, &name).await
+    mcp_service::delete_mcp(&db, &mcp_manager, name).await
 }
 
-/// 切换 MCP 状态
+/// 切换 MCP 状态（enable ↔ disable，自动连接/断开）
 #[tauri::command]
 pub async fn toggle_mcp_status(
     db_state: State<'_, DbState>,
+    mcp_manager: State<'_, Arc<McpManager>>,
     name: String,
-) -> Result<McpDto, String> {
+) -> Result<McpServiceDto, String> {
     let db = db_state.get().await.map_err(|e| e.to_string())?;
-    
-    let mcp = db_mcp::get_mcp_by_name(&db, &name)
-        .await?
-        .ok_or_else(|| format!("MCP not found: {}", name))?;
-    
-    let new_status = if mcp.status == "enable" { "disable" } else { "enable" };
-    let payload = UpdateMcpPayload { 
-        status: Some(new_status.to_string()), 
-        ..Default::default() 
-    };
-    db_mcp::update_mcp_by_name(&db, &name, payload).await
+    mcp_service::toggle_mcp_status(&db, &mcp_manager, name).await
+}
+
+/// 显式连接一个 MCP 服务（不改变 status，纯运行时操作）
+#[tauri::command]
+pub async fn mcp_connect(
+    db_state: State<'_, DbState>,
+    mcp_manager: State<'_, Arc<McpManager>>,
+    name: String,
+) -> Result<McpServiceDto, String> {
+    let db = db_state.get().await.map_err(|e| e.to_string())?;
+    mcp_service::connect_mcp(&db, &mcp_manager, name).await
+}
+
+/// 显式断开一个 MCP 服务（不改变 status，不删 DB）
+#[tauri::command]
+pub async fn mcp_disconnect(
+    db_state: State<'_, DbState>,
+    mcp_manager: State<'_, Arc<McpManager>>,
+    name: String,
+) -> Result<McpServiceDto, String> {
+    let db = db_state.get().await.map_err(|e| e.to_string())?;
+    mcp_service::disconnect_mcp(&db, &mcp_manager, name).await
+}
+
+/// 一键恢复所有 status=enable 且未运行的服务
+#[tauri::command]
+pub async fn mcp_resume_all(
+    db_state: State<'_, DbState>,
+    mcp_manager: State<'_, Arc<McpManager>>,
+) -> Result<Vec<ResumeResult>, String> {
+    let db = db_state.get().await.map_err(|e| e.to_string())?;
+    mcp_service::resume_all_enabled(&db, &mcp_manager).await
 }

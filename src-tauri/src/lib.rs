@@ -35,7 +35,7 @@ pub fn run() {
             let app_handle = app.handle().clone();
             let db_state = db::DbState::new(app_handle.clone());
             app.manage(db_state.clone());
-            
+
             // 启动 HTTP webhook 服务（内部会创建 WechatClient）
             provider::server::start_http_server(app);
 
@@ -52,7 +52,7 @@ pub fn run() {
             // 启动微信消息服务（在后台运行）
             let wechat_client = provider::wechat::WechatClient::new(wechat_url.clone());
             app.manage(wechat_client.clone());
-            
+
             let webhook_channel = app
                 .state::<Arc<provider::server::WebhookChannel>>()
                 .inner()
@@ -70,9 +70,26 @@ pub fn run() {
                 .await;
             });
 
-            // 注册 MCP 服务管理器
-            let cache_for_mcp = cache_arc.clone();
-            let db_state_clone = db_state.clone();
+            // 注册 MCP 运行时管理器（纯运行时，不依赖 DB）
+            let mcp_manager = Arc::new(provider::mcp::McpManager::new(
+                reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(300))
+                    .build()
+                    .expect("Failed to build reqwest client for MCP"),
+            ));
+            app.manage(mcp_manager.clone());
+
+            // 启动时重置 operating 为 idle（上次运行时的连接已失效）
+            tauri::async_runtime::spawn(async move {
+                let db = match db_state.get().await {
+                    Ok(db) => db,
+                    Err(e) => {
+                        tracing::error!("[McpService] startup reset: failed to get DB: {}", e);
+                        return;
+                    }
+                };
+                services::mcp_service::reset_all_operating_on_startup(&db).await;
+            });
 
             Ok(())
         })
@@ -92,13 +109,16 @@ pub fn run() {
             commands::model_config::reorder_provider_models,
             commands::model_config::resolve_provider_payload,
             // MCP serve config commands
-                        commands::mcp::get_all_mcps,
-                        commands::mcp::get_mcp,
-                        commands::mcp::create_mcp,
-                        commands::mcp::update_mcp,
-                        commands::mcp::delete_mcp,
-                        commands::mcp::toggle_mcp_status,
-          
+            commands::mcp::get_all_mcps,
+            commands::mcp::get_mcp,
+            commands::mcp::create_mcp,
+            commands::mcp::update_mcp,
+            commands::mcp::delete_mcp,
+            commands::mcp::toggle_mcp_status,
+            // MCP runtime control commands (方案 B: 纯被动式)
+            commands::mcp::mcp_connect,
+            commands::mcp::mcp_disconnect,
+            commands::mcp::mcp_resume_all,
             // Chat commands
             commands::chat::get_messages,
             commands::chat::clear_messages,
