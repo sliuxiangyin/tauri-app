@@ -12,7 +12,7 @@ import {
   MessageContent,
   MessageResponse,
 } from "@/components/ai-elements/message";
-import { ChatBox } from "@/components/chat/chat-box";
+import { ChatBox } from "@/components/chat-page/chat-box";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {

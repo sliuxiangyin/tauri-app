@@ -10,6 +10,16 @@ use crate::services::mcp_service;
 use crate::types::mcp::{McpServiceDto, ResumeResult};
 use tauri::State;
 
+/// 获取运行中的 MCP 配置列表（status=enable 且 operating=running）
+#[tauri::command]
+pub async fn get_running_mcps(
+    db_state: State<'_, DbState>,
+    mcp_manager: State<'_, Arc<McpManager>>,
+) -> Result<Vec<McpServiceDto>, String> {
+    let db = db_state.get().await.map_err(|e| e.to_string())?;
+    mcp_service::get_running_mcps(&db, &mcp_manager).await
+}
+
 /// 获取所有 MCP 配置（含运行时状态）
 #[tauri::command]
 pub async fn get_all_mcps(

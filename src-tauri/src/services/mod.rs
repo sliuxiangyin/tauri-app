@@ -7,6 +7,7 @@
 //! - ❌ 不直接调用外部 HTTP API（由 Provider 层负责）
 
 pub mod chat_model_service;
+pub mod chat_tools_service;
 pub mod db;
 pub mod llm_service;
 pub mod mcp_service;

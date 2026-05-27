@@ -29,7 +29,6 @@ import {
   ChevronDown,
   ChevronRight,
   Link2,
-  Bell,
   RefreshCw,
   Pencil,
   Trash2,

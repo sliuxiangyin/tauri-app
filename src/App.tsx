@@ -3,7 +3,6 @@ import { useEffect } from "react";
 import { TooltipProvider } from "./components/ui/tooltip";
 import MainPage from "./pages/main-page";
 import { useChatStore } from "./stores/useChatStore";
-import { useMcpStore } from "./stores/useMcpStore";
 
 function App() {
   const initWebhookListener = useChatStore((s) => s.initWebhookListener);

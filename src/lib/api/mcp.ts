@@ -48,6 +48,11 @@ export async function deleteMcp(name: string): Promise<void> {
   return invoke<void>('delete_mcp', { name });
 }
 
+// 获取所有启用且运行中的 MCP 配置
+export async function getRunningMcps(): Promise<McpDto[]> {
+  return invoke<McpDto[]>('get_running_mcps');
+}
+
 // 切换 MCP 状态
 export async function toggleMcpStatus(name: string): Promise<McpDto> {
   return invoke<McpDto>('toggle_mcp_status', { name });

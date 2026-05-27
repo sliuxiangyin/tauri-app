@@ -2,7 +2,6 @@
 
 pub mod chat_message;
 pub mod mcp_model;
-pub mod mcp_serve_config;
 pub mod model_provider_config;
 pub mod model_provider_model;
 

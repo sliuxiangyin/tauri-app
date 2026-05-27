@@ -109,6 +109,7 @@ pub fn run() {
             commands::model_config::reorder_provider_models,
             commands::model_config::resolve_provider_payload,
             // MCP serve config commands
+            commands::mcp::get_running_mcps,
             commands::mcp::get_all_mcps,
             commands::mcp::get_mcp,
             commands::mcp::create_mcp,
@@ -132,6 +133,10 @@ pub fn run() {
             commands::wechat::wechat_login_cancel,
             commands::wechat::wechat_send_message,
             commands::wechat::wechat_get_accounts,
+            // Chat tools commands
+            commands::chat_tools::get_chat_tools_config,
+            commands::chat_tools::save_chat_tools_config,
+            commands::chat_tools::delete_chat_tools_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

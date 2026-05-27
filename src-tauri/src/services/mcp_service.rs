@@ -183,6 +183,22 @@ async fn set_operating_connecting(db: &DatabaseConnection, name: &str) {
 
 // ─── 公开 API ─────────────────────────────────────────────
 
+/// 获取运行中的 MCP 配置列表（status=enable 且 operating=running）
+pub async fn get_running_mcps(
+    db: &DatabaseConnection,
+    mcp: &McpManager,
+) -> Result<Vec<McpServiceDto>, String> {
+    let list = db_mcp::get_all_mcps(db).await?;
+    Ok(list
+        .into_iter()
+        .filter(|dto| dto.status == "enable" && dto.operating == "running")
+        .map(|dto| {
+            let runtime = mcp.get_status(&dto.name);
+            McpServiceDto::from_db_and_runtime(dto, runtime.as_ref())
+        })
+        .collect())
+}
+
 /// 获取所有 MCP 配置（合并运行时状态）
 pub async fn get_all_mcps(
     db: &DatabaseConnection,

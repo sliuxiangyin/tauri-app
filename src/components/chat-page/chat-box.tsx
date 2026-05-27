@@ -18,6 +18,7 @@ import {
 } from "@tabler/icons-react";
 import { cancelLlmChat, isTauriRuntime } from "@/lib/api/tauri-llm";
 import { cn } from "@/lib/utils";
+import { Ai05ToolPanel } from "./ai-05-tool-panel";
 
 const inputGroupClassName =
   "w-full [&>[data-slot=input-group]]:rounded-none [&>[data-slot=input-group]]:shadow-none [&>[data-slot=input-group]]:border-t [&>[data-slot=input-group]]:border-x-0 [&>[data-slot=input-group]]:border-b-0 [&>[data-slot=input-group]]:border-border/80 [&>[data-slot=input-group]]:focus-within:ring-0 [&>[data-slot=input-group]]:focus-within:ring-transparent [&>[data-slot=input-group]]:focus-within:ring-offset-0 [&>[data-slot=input-group]]:focus-within:border-border/80 [&>[data-slot=input-group]]:focus-within:outline-none";
@@ -31,6 +32,7 @@ export type ChatBoxProps = {
 export function ChatBox({ accountId, onUserSubmit, className }: ChatBoxProps) {
   const [inputValue, setInputValue] = useState("");
   const [status, setStatus] = useState<ChatStatus>("ready");
+  const [showToolPanel, setShowToolPanel] = useState(false);
   const accountIdRef = useRef(accountId);
   accountIdRef.current = accountId;
 
@@ -40,10 +42,8 @@ export function ChatBox({ accountId, onUserSubmit, className }: ChatBoxProps) {
       if (!trimmed) {
         return;
       }
-
       setStatus("submitted");
       setInputValue("");
-
       try {
         setStatus("streaming");
         await Promise.resolve(onUserSubmit?.(trimmed));
@@ -64,7 +64,7 @@ export function ChatBox({ accountId, onUserSubmit, className }: ChatBoxProps) {
   }, []);
 
   return (
-    <div className={cn("shrink-0 bg-background", className)}>
+    <div className={cn("shrink-0 bg-background relative", className)}>
       <PromptInput
         onSubmit={(message) => void handleSubmit(message.text)}
         className={inputGroupClassName}
@@ -85,7 +85,11 @@ export function ChatBox({ accountId, onUserSubmit, className }: ChatBoxProps) {
             <PromptInputButton aria-label="New chat">
               <IconMessageCircle className="size-4" />
             </PromptInputButton>
-            <PromptInputButton aria-label="工具">
+            <PromptInputButton
+              aria-label="工具"
+              className={cn("cursor-pointer", showToolPanel && "bg-accent text-accent-foreground")}
+              onClick={() => {console.log("1111");setShowToolPanel((v) => !v)}}
+            >
               <IconTool className="size-4" />
             </PromptInputButton>
           </PromptInputTools>
@@ -96,6 +100,12 @@ export function ChatBox({ accountId, onUserSubmit, className }: ChatBoxProps) {
           />
         </PromptInputFooter>
       </PromptInput>
+      <Ai05ToolPanel
+        sessionId={"default"}
+        accountId={accountId ?? ""}
+        show={showToolPanel}
+        onClose={() => setShowToolPanel(false)}
+      />
     </div>
   );
 }

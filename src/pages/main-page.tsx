@@ -1,7 +1,7 @@
-import ChatLayout from "@/components/chat/chat-shell.tsx";
+import ChatLayout from "@/components/chat-page/chat-shell.tsx";
 import { MainHeaderWithControls } from "../components/header/main-header-with-controls.tsx";
 import { SidebarProvider } from "@/components/ui/sidebar";
-import AppSidebar from "@/components/chat/account-list.tsx";
+import AppSidebar from "@/components/chat-page/account-list.tsx";
 import DashboardPage from "./dashboard-page.tsx";
 import { useTabStore } from "@/stores/useTabStore.ts";
 import { useEffect } from "react";
