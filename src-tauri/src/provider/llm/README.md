@@ -2,20 +2,45 @@
 
 本目录在 Rust 侧统一「聊天补全 / 流式输出」的**领域层**：`LlmProvider`、各厂商适配与公共类型；**不包含** Tauri 命令（命令在 **`src-tauri/src/commands/llm.rs`**，通过 `crate::provider::llm` 调用此处能力）。
 
-## 目录与职责
+## 目录结构
 
-| 文件 | 说明 |
-|------|------|
-| `provider_trait.rs` | `LlmProvider`：`send_message`（非流式）、`stream_chat`（流式，返回统一事件流） |
+```
+llm/
+├── mod.rs              # 统一导出入口
+├── types.rs            # 核心类型（ChatMessage, ChatRequest, Role, ProviderConfigPayload 等）
+├── error.rs           # 错误定义（LlmError）
+├── llm_event.rs       # LLM 流式事件（LlmStreamEvent, LlmChunkEnvelope）
+├── dispatcher.rs      # Provider 枚举调度器
+│
+├── providers/         # Provider 实现子模块
+│   ├── mod.rs        # 子模块导出
+│   ├── provider_trait.rs  # LlmProvider trait 定义
+│   ├── openai_compatible.rs # OpenAI Chat Completions 兼容实现
+│   ├── anthropic.rs  # Anthropic Messages API
+│   └── ollama.rs    # Ollama /api/chat
+│
+└── agent/            # Agent 循环子模块
+    ├── mod.rs        # 子模块导出
+    ├── config.rs     # AgentConfig（循环控制配置）
+    ├── event.rs      # AgentStreamEvent, StopReason, AgentResultSummary
+    └── runner.rs     # AgentRunner（ReAct 循环执行器）
+```
+
+## 模块职责
+
+| 模块/文件 | 说明 |
+|---------|------|
 | `types.rs` | `ChatMessage`、`ChatRequest`、`Role`、`ProviderConfigPayload`（前端传入的厂商 + 凭证） |
-| `stream.rs` | `LlmStreamEvent`（厂商层片段）、`LlmChunkEnvelope`（带 `stream_id` 的 `llm:chunk` 载荷） |
 | `error.rs` | `LlmError`：HTTP、JSON、空回复、配置错误等 |
-| `openai_compatible.rs` | OpenAI Chat Completions 兼容实现（OpenAI、DeepSeek 等换 `base_url` 即可） |
-| `anthropic.rs` | Anthropic Messages API |
-| `ollama.rs` | Ollama `/api/chat` |
+| `llm_event.rs` | `LlmStreamEvent`（厂商层片段）、`LlmChunkEnvelope`（带 `account_id` 的 `llm:chunk` 载荷） |
 | `dispatcher.rs` | `Provider` 枚举、`TryFrom<ProviderConfigPayload>`、`impl LlmProvider for Provider` |
-
-Tauri 命令定义在 **`src-tauri/src/commands/llm.rs`**（`commands::llm`），不在本目录内。
+| `providers/trait.rs` | `LlmProvider`：`send_message`（非流式）、`stream_chat`（流式，返回统一事件流） |
+| `providers/openai_compatible.rs` | OpenAI Chat Completions 兼容实现（OpenAI、DeepSeek 等换 `base_url` 即可） |
+| `providers/anthropic.rs` | Anthropic Messages API |
+| `providers/ollama.rs` | Ollama `/api/chat` |
+| `agent/config.rs` | `AgentConfig`：最大步数、超时、空响应阈值等配置 |
+| `agent/event.rs` | `AgentStreamEvent`、`StopReason`、`AgentResultSummary` |
+| `agent/runner.rs` | `AgentRunner`：`FnToolExecutor`、ReAct 循环执行 |
 
 ## Tauri 命令
 
@@ -90,18 +115,18 @@ JSON 为 **`account_id` + 扁平后的 `LlmStreamEvent`**（`kind` 为 `text_del
 
 ## `ChatRequest`（`invoke` 中的 `req`）
 
-- **`messages`**：`{ "role": "system" \| "user" \| "assistant", "content": "..." }[]`
+- **`messages`**：`{ "role": "system" | "user" | "assistant", "content": "..." }[]`
 - **`model`**：厂商侧模型名
 - **`temperature`**：可选，缺省为 `1.0`
-- **`max_tokens`**：可选；Anthropic 在未指定时使用内部默认（见 `anthropic.rs`）
+- **`max_tokens`**：可选；Anthropic 在未指定时使用内部默认（见 `providers/anthropic.rs`）
 
 说明：Anthropic 会把 `role` 为 `system` 的消息从 `messages` 中抽出，合并为 API 的顶层 `system` 字段。
 
 ## 扩展新厂商
 
-1. 新建实现文件，为结构体实现 `LlmProvider`（必要时复用 `openai_compatible` 或单独解析 SSE/NDJSON）。
-2. 在 `types.rs` 的 `ProviderConfigPayload` 增加变体与字段。
-3. 在 `dispatcher.rs` 的 `Provider` 与 `TryFrom`、`impl LlmProvider for Provider` 中增加分支。
+1. 在 `providers/` 目录下新建实现文件（如 `providers/gemini.rs`），实现 `LlmProvider`
+2. 在 `types.rs` 的 `ProviderConfigPayload` 增加变体与字段
+3. 在 `dispatcher.rs` 的 `Provider` 与 `TryFrom`、`impl LlmProvider for Provider` 中增加分支
 
 ## 安全提示
 

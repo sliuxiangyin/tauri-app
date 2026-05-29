@@ -7,11 +7,9 @@ use tauri::{AppHandle, Emitter, State};
 use crate::db::DbState;
 use crate::provider::cache::Cache;
 use crate::provider::llm::{
-    provider_trait::LlmProvider,
-    types::ChatRequest,
-    types::ChatMessage,
-    LlmChunkEnvelope, LlmStreamSender,
+    ChatMessage, ChatRequest, LlmChunkEnvelope, LlmProvider, LlmStreamSender,
 };
+use crate::provider::mcp::McpManager;
 use crate::services::llm_service;
 use crate::types::chat::ChatContext;
 
@@ -73,6 +71,7 @@ pub async fn llm_chat_stream(
     app: AppHandle,
     _cache: State<'_, Arc<Cache>>,
     db_state: State<'_, DbState>,
+    mcp_manager: State<'_, Arc<McpManager>>,
     abort_flags: State<'_, LlmAbortFlags>,
     account_id: String,
     session_id: String,
@@ -105,6 +104,7 @@ pub async fn llm_chat_stream(
 
     let result = llm_service::chat_with_placeholder(
         &db_state,
+        (*mcp_manager).clone(),
         ctx,
         Some(tx),
         abort_flag,

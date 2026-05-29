@@ -1,11 +1,107 @@
 //! MCP 单连接生命周期管理
 //!
-//! 每个 McpConnection 管理一个 MCP 服务器的完整生命周期：
-//! 连接建立 → 工具调用 → 健康检测 → 断开清理 → 自动重连
+//! ## 模块结构
+//!
+//! ```text
+//! ┌──────────────────────────────────────────────────────────────┐
+//! │                      McpConnection                             │
+//! │                    (单连接管理器)                              │
+//! │                                                              │
+//! │  核心字段:                                                    │
+//! │  ├─ service: Mutex<Option<RunningService>>                   │
+//! │  ├─ circuit: CircuitBreaker (熔断器)                          │
+//! │  ├─ connected: AtomicBool (连接状态标志)                      │
+//! │  └─ heartbeat_running: AtomicBool (心跳监控运行标志)          │
+//! │                                                              │
+//! │  配置:                                                        │
+//! │  ├─ config: TransportConfig (传输层配置)                      │
+//! │  ├─ reconnect_config: ReconnectConfig (重连策略)               │
+//! │  └─ heartbeat_config: HeartbeatConfig (心跳配置)               │
+//! └──────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! ## 连接生命周期
+//!
+//! ```text
+//! connect() → 连接成功 → start_heartbeat_monitor() → 后台监控
+//!                 ↓                                         ↓
+//!            connect()                                检测到断开
+//!                 ↓                                         ↓
+//!          disconnect_inner()                      auto_reconnect()
+//!                 ↓                                         ↓
+//!          stop_heartbeat_monitor()                        ↓
+//!                 ↓                                    重连成功/失败
+//!            service.close()                            ↓
+//!                                                       发送事件
+//! ```
+//!
+//! ## 心跳保活机制
+//!
+//! STDIO 子进程没有内置心跳保活机制，依赖后台监控任务检测连接状态：
+//!
+//! - **心跳间隔**: 默认 30 秒（可配置）
+//! - **存活检测**: 通过 `RunningService.is_closed()` 检测连接状态
+//! - **自动重连**: 检测到断开后自动重连（最多 3 次，指数退避）
+//! - **状态同步**: 重连结果通过 McpEventBus 推送事件
+//!
+//! ## 熔断器策略
+//!
+//! ```text
+//! Closed ──(连续失败 3 次)──▶ Open
+//! Open   ──(冷却 30s 后)────▶ HalfOpen
+//! HalfOpen ──(成功)────────▶ Closed
+//! HalfOpen ──(失败)────────▶ Open
+//! ```
+//!
+//! ## 使用示例
+//!
+//! ```rust,ignore
+//! use crate::provider::mcp::{McpConnection, TransportConfig, HeartbeatConfig};
+//! use std::time::Duration;
+//!
+//! // 创建连接（默认心跳配置）
+//! let conn = McpConnection::new(
+//!     "playwright".to_string(),
+//!     TransportConfig::Stdio {
+//!         command: "npx".to_string(),
+//!         args: vec!["-y".to_string(), "@modelcontextprotocol/server-playwright".to_string()],
+//!         env: HashMap::new(),
+//!     },
+//!     http_client,
+//!     events,
+//! );
+//!
+//! // 连接并自动启用心跳监控
+//! conn.connect().await?;
+//!
+//! // 调用工具
+//! let tools = conn.list_tools().await?;
+//! let result = conn.call_tool(params).await?;
+//!
+//! // 断开连接并停止心跳监控
+//! conn.disconnect().await?;
+//! ```
+//!
+//! ## 自定义心跳配置
+//!
+//! ```rust,ignore
+//! use std::time::Duration;
+//!
+//! let heartbeat_config = HeartbeatConfig {
+//!     interval: Duration::from_secs(60),  // 60s 间隔
+//!     auto_reconnect: true,              // 启用自动重连
+//!     max_auto_reconnect: 5,             // 最多重连 5 次
+//! };
+//!
+//! let conn = McpConnection::new_with_heartbeat(
+//!     name, config, http_client, events, heartbeat_config
+//! );
+//! ```
 
 use serde::Serialize;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
@@ -42,15 +138,6 @@ impl TransportConfig {
     }
 }
 
-/// 连接健康状态
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConnectionHealth {
-    Connected,
-    Disconnected,
-    Reconnecting,
-    Failed,
-}
-
 /// MCP 服务运行时状态（返回给调用方）
 #[derive(Debug, Clone, Serialize)]
 pub struct McpStatus {
@@ -61,26 +148,23 @@ pub struct McpStatus {
     pub fail_count: u32,
 }
 
-/// 重连策略配置
+/// 心跳监控配置
 #[derive(Debug, Clone)]
-pub struct ReconnectConfig {
-    /// 初始退避时间
-    pub initial_backoff: Duration,
-    /// 最大退避时间
-    pub max_backoff: Duration,
-    /// 退避乘数
-    pub backoff_multiplier: f64,
-    /// 最大重试次数（None = 无限）
-    pub max_retries: Option<u32>,
+pub struct HeartbeatConfig {
+    /// 心跳间隔（STDIO 模式下必须）
+    pub interval: Duration,
+    /// 是否启用自动重连（检测到断开时）
+    pub auto_reconnect: bool,
+    /// 最大自动重连次数
+    pub max_auto_reconnect: u32,
 }
 
-impl Default for ReconnectConfig {
+impl Default for HeartbeatConfig {
     fn default() -> Self {
         Self {
-            initial_backoff: Duration::from_secs(1),
-            max_backoff: Duration::from_secs(60),
-            backoff_multiplier: 2.0,
-            max_retries: Some(5),
+            interval: Duration::from_secs(30),
+            auto_reconnect: true,
+            max_auto_reconnect: 3,
         }
     }
 }
@@ -91,6 +175,11 @@ impl Default for ReconnectConfig {
 /// - `service: Mutex<Option<RunningService>>` — tokio async Mutex，允许跨 await 持锁
 /// - `RunningService` 实现了 `Deref<Target = Peer<RoleClient>>`，可以直接调用 `call_tool` 等方法
 /// - `close()` 需要 `&mut self`，通过 Mutex 取出后 drop guard 再关闭
+///
+/// ## 心跳保活机制
+/// - `heartbeat_tx/watch_channel` — 心跳信号通道，用于控制监控任务生命周期
+/// - `heartbeat_config` — 心跳间隔和自动重连配置
+/// - 后台监控任务在连接后自动启动，断开后自动停止
 pub struct McpConnection {
     /// 服务名称（唯一标识）
     pub name: String,
@@ -98,16 +187,21 @@ pub struct McpConnection {
     config: TransportConfig,
     /// 活跃的 MCP 客户端连接
     service: Mutex<Option<RunningService<RoleClient, ()>>>,
+
     /// 熔断器
     circuit: CircuitBreaker,
     /// 连接是否健康（轻量原子标记，避免每次加锁）
     connected: AtomicBool,
-    /// 重连配置
-    reconnect_config: ReconnectConfig,
     /// 事件总线（发布状态变更）
     events: SharedEventBus,
-    /// 共享 HTTP 客户端
-    http_client: reqwest::Client,
+
+    // ─── 心跳保活机制 ──────────────────────────────────────────
+    /// 心跳配置（默认 30s 间隔）
+    heartbeat_config: HeartbeatConfig,
+    /// 心跳运行中标志（AtomicBool，用于控制监控任务生命周期）
+    heartbeat_running: Arc<AtomicBool>,
+    /// 上次活跃时间戳（用于健康检查）
+    last_active: AtomicU64,
 }
 
 impl McpConnection {
@@ -115,7 +209,6 @@ impl McpConnection {
     pub fn new(
         name: String,
         config: TransportConfig,
-        http_client: reqwest::Client,
         events: SharedEventBus,
     ) -> Self {
         Self {
@@ -124,9 +217,10 @@ impl McpConnection {
             service: Mutex::new(None),
             circuit: CircuitBreaker::new(CircuitBreakerConfig::default()),
             connected: AtomicBool::new(false),
-            reconnect_config: ReconnectConfig::default(),
             events,
-            http_client,
+            heartbeat_config: HeartbeatConfig::default(),
+            heartbeat_running: Arc::new(AtomicBool::new(false)),
+            last_active: AtomicU64::new(0),
         }
     }
 
@@ -136,7 +230,8 @@ impl McpConnection {
     /// 1. 检查熔断器
     /// 2. 构建 Transport
     /// 3. serve_client 建立连接
-    /// 4. 存入 service
+    /// 4. 启动心跳监控任务
+    /// 5. 存入 service
     pub async fn connect(&self) -> McpResult<McpStatus> {
         // 熔断器检查
         if !self.circuit.allow_request() {
@@ -145,7 +240,7 @@ impl McpConnection {
             });
         }
 
-        // 如果已经连接，先断开
+        // 如果已经连接，先断开（会停止旧的心跳监控）
         if self.connected.load(Ordering::Acquire) {
             debug!("[MCP:{}] already connected, reconnecting...", self.name);
             self.disconnect_inner().await;
@@ -170,6 +265,11 @@ impl McpConnection {
         }
         self.connected.store(true, Ordering::Release);
         self.circuit.record_success();
+        self.update_last_active();
+
+        // 启动心跳监控任务（需要包装为 Arc）
+        let this: Arc<McpConnection> = unsafe { Arc::from_raw(self as *const McpConnection as *const _) };
+        this.start_heartbeat_monitor();
 
         info!("[MCP:{}] connected successfully", self.name);
         self.events.send(McpEvent::Connected {
@@ -187,6 +287,9 @@ impl McpConnection {
 
     /// 内部断开逻辑
     async fn disconnect_inner(&self) {
+        // 停止心跳监控
+        self.stop_heartbeat_monitor();
+
         let mut guard = self.service.lock().await;
         if let Some(mut service) = guard.take() {
             drop(guard); // 释放锁后再 close
@@ -273,28 +376,179 @@ impl McpConnection {
         Ok(tools)
     }
 
-    /// 健康检查：检测底层连接是否仍然存活
-    pub async fn health_check(&self) -> bool {
-        if !self.connected.load(Ordering::Acquire) {
-            return false;
-        }
+    /// 重置熔断器（用于手动恢复）
+    pub fn reset_circuit(&self) {
+        self.circuit.reset();
+    }
 
+    // ─── 心跳保活机制 ──────────────────────────────────────────
+
+    /// 更新最后活跃时间戳
+    fn update_last_active(&self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        self.last_active.store(now, Ordering::Release);
+    }
+
+    /// 获取最后活跃时间戳
+    fn get_last_active(&self) -> u64 {
+        self.last_active.load(Ordering::Acquire)
+    }
+
+    /// 启动心跳监控任务
+    ///
+    /// 创建一个后台 tokio task，定期检测连接状态。
+    /// 检测到断开时根据配置自动重连。
+    fn start_heartbeat_monitor(self: &Arc<Self>) {
+        // 如果已有运行中的监控，先停止
+        self.stop_heartbeat_monitor();
+
+        let name = self.name.clone();
+        let config = self.heartbeat_config.clone();
+        let heartbeat_running = Arc::clone(&self.heartbeat_running);
+
+        debug!(
+            "[MCP:{}] starting heartbeat monitor (interval={:?}, auto_reconnect={})",
+            name, config.interval, config.auto_reconnect
+        );
+
+        // 克隆 Arc 供后台任务使用
+        let this = Arc::clone(self);
+
+        // 设置运行标志
+        heartbeat_running.store(true, Ordering::Release);
+
+        // 启动后台监控任务
+        tokio::spawn(async move {
+            loop {
+                // 检查运行标志
+                if !heartbeat_running.load(Ordering::Acquire) {
+                    debug!("[MCP:{}] heartbeat monitor stopped by flag", name);
+                    break;
+                }
+
+                // 定时心跳检测
+                if this.connected.load(Ordering::Acquire) {
+                    // 检测连接是否真的存活
+                    let is_alive = this.detect_connection_alive().await;
+
+                    if !is_alive {
+                        warn!(
+                            "[MCP:{}] heartbeat detected connection died, auto_reconnect={}",
+                            name, config.auto_reconnect
+                        );
+
+                        if config.auto_reconnect {
+                            let success = this.heartbeat_auto_reconnect().await;
+                            if !success {
+                                // 重连失败，停止监控
+                                debug!("[MCP:{}] heartbeat auto-reconnect failed, stopping monitor", name);
+                                break;
+                            }
+                        } else {
+                            // 不自动重连，发送断开事件
+                            this.events.send(McpEvent::Disconnected {
+                                name: name.clone(),
+                                reason: "heartbeat detected connection died".to_string(),
+                            });
+                        }
+                    }
+                }
+
+                // 等待下一个心跳间隔
+                tokio::time::sleep(config.interval).await;
+            }
+
+            // 清理运行标志
+            heartbeat_running.store(false, Ordering::Release);
+            debug!("[MCP:{}] heartbeat monitor exited", name);
+        });
+    }
+
+    /// 停止心跳监控任务（立即生效）
+    fn stop_heartbeat_monitor(&self) {
+        // 设置停止标志，后台任务下次检查时会立即退出
+        self.heartbeat_running.store(false, Ordering::Release);
+        debug!("[MCP:{}] heartbeat monitor stop flag set", self.name);
+    }
+
+    /// 检测连接是否真的存活（通过检查 RunningService 状态）
+    async fn detect_connection_alive(&self) -> bool {
         let guard = self.service.lock().await;
         match guard.as_ref() {
             Some(service) => {
-                let closed = service.is_closed();
-                if closed {
-                    warn!("[MCP:{}] health check: connection is closed", self.name);
-                }
-                !closed
+                // 检查服务是否已关闭
+                !service.is_closed()
             }
             None => false,
         }
     }
 
-    /// 重置熔断器（用于手动恢复）
-    pub fn reset_circuit(&self) {
-        self.circuit.reset();
+    /// 执行自动重连（心跳监控专用）
+    async fn heartbeat_auto_reconnect(self: &Arc<Self>) -> bool {
+        if !self.heartbeat_config.auto_reconnect {
+            return false;
+        }
+
+        let max_retries = self.heartbeat_config.max_auto_reconnect;
+        let name = self.name.clone();
+
+        for attempt in 1..=max_retries {
+            info!(
+                "[MCP:{}] heartbeat auto-reconnect attempt {}/{}",
+                name, attempt, max_retries
+            );
+
+            // 先断开旧连接（不触发停止监控）
+            {
+                let mut guard = self.service.lock().await;
+                if let Some(mut service) = guard.take() {
+                    let _ = service.close().await;
+                }
+            }
+            self.connected.store(false, Ordering::Release);
+
+            // 尝试重新连接
+            match self.build_and_serve().await {
+                Ok(service) => {
+                    // 存储新连接
+                    {
+                        let mut guard = self.service.lock().await;
+                        *guard = Some(service);
+                    }
+                    self.connected.store(true, Ordering::Release);
+                    self.circuit.record_success();
+                    self.update_last_active();
+
+                    info!("[MCP:{}] heartbeat auto-reconnect succeeded", name);
+                    self.events.send(McpEvent::Reconnected {
+                        name: name.clone(),
+                    });
+                    return true;
+                }
+                Err(e) => {
+                    warn!(
+                        "[MCP:{}] heartbeat auto-reconnect attempt {} failed: {}",
+                        name, attempt, e
+                    );
+                    self.circuit.record_failure();
+
+                    // 指数退避
+                    let backoff = Duration::from_secs(2_u64.pow(attempt as u32).min(60));
+                    tokio::time::sleep(backoff).await;
+                }
+            }
+        }
+
+        // 所有重连尝试都失败
+        error!("[MCP:{}] heartbeat auto-reconnect exhausted (max {})", name, max_retries);
+        self.events.send(McpEvent::ReconnectFailed {
+            name: name.clone(),
+            error: "max auto-reconnect attempts exceeded".to_string(),
+        });
+        false
     }
 
     // ─── 内部方法 ────────────────────────────────────────────
@@ -358,67 +612,6 @@ impl McpConnection {
                     reason: e.to_string(),
                 });
                 Err(e)
-            }
-        }
-    }
-
-    /// 带指数退避的重连循环
-    pub async fn reconnect_with_backoff(&self) -> McpResult<()> {
-        let mut attempt: u32 = 0;
-        let mut backoff = self.reconnect_config.initial_backoff;
-
-        loop {
-            attempt += 1;
-
-            // 检查最大重试次数
-            if let Some(max) = self.reconnect_config.max_retries {
-                if attempt > max {
-                    let err = format!("max retries ({}) exceeded", max);
-                    error!("[MCP:{}] {}", self.name, err);
-                    self.events.send(McpEvent::ReconnectFailed {
-                        name: self.name.clone(),
-                        error: err.clone(),
-                    });
-                    return Err(McpError::ConnectionClosed {
-                        name: self.name.clone(),
-                        reason: err,
-                    });
-                }
-            }
-
-            info!(
-                "[MCP:{}] reconnecting (attempt {}/{})...",
-                self.name,
-                attempt,
-                self.reconnect_config
-                    .max_retries
-                    .map_or("∞".to_string(), |m| m.to_string())
-            );
-            self.events.send(McpEvent::Reconnecting {
-                name: self.name.clone(),
-                attempt,
-            });
-
-            // 断开旧连接
-            self.disconnect_inner().await;
-
-            // 尝试连接
-            match self.connect().await {
-                Ok(_) => {
-                    self.events.send(McpEvent::Reconnected {
-                        name: self.name.clone(),
-                    });
-                    return Ok(());
-                }
-                Err(e) => {
-                    warn!("[MCP:{}] reconnect attempt {} failed: {}", self.name, attempt, e);
-                    // 指数退避等待
-                    tokio::time::sleep(backoff).await;
-                    backoff = Duration::from_secs_f64(
-                        (backoff.as_secs_f64() * self.reconnect_config.backoff_multiplier)
-                            .min(self.reconnect_config.max_backoff.as_secs_f64()),
-                    );
-                }
             }
         }
     }
@@ -550,7 +743,7 @@ impl McpConnection {
                     }
 
                     // 2. 查找命令实际路径（resolve .cmd/.bat/.exe）
-                    let resolved = Self::resolve_windows_command(command, args, env);
+                    let resolved = Self::resolve_windows_command(command, &args, env);
                     debug!(
                         "[MCP:{}] resolved command: resolved={:?} cmd_exe={:?}",
                         self.name,
@@ -734,7 +927,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "windows")]
     fn test_npm_path_prepended() {
-        let paths = Self::build_windows_key_paths();
+        let paths = super::McpConnection::build_windows_key_paths();
         assert!(
             !paths.is_empty(),
             "build_windows_key_paths should return at least one path"
@@ -758,7 +951,7 @@ mod tests {
         use std::collections::HashMap;
         let env = HashMap::new();
         let (resolved, cmd_exe, args) =
-            Self::resolve_windows_command("npx", &["-y".to_string(), "some-package".to_string()], &env);
+            super::McpConnection::resolve_windows_command("npx", &["-y".to_string(), "some-package".to_string()], &env);
         println!("resolved={:?}, cmd_exe={:?}, args={:?}", resolved, cmd_exe, args);
         // cmd_exe 应该是 Some("npx.cmd")
         assert!(

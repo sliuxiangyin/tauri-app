@@ -53,12 +53,18 @@ pub fn run() {
             let wechat_client = provider::wechat::WechatClient::new(wechat_url.clone());
             app.manage(wechat_client.clone());
 
+            // 注册 MCP 运行时管理器（纯运行时，不依赖 DB）
+            // 放在前面以便微信消息服务也能访问
+            let mcp_manager = Arc::new(provider::mcp::McpManager::new());
+            app.manage(mcp_manager.clone());
+
             let webhook_channel = app
                 .state::<Arc<provider::server::WebhookChannel>>()
                 .inner()
                 .clone();
             let db_state_for_wechat = db_state.clone();
             let cache_for_wechat = cache_arc.clone();
+            let mcp_for_wechat = mcp_manager.clone();
             tauri::async_runtime::spawn(async move {
                 services::wechat_message::start_wechat_message_service(
                     app_handle.clone(),
@@ -66,29 +72,36 @@ pub fn run() {
                     webhook_channel,
                     wechat_client,
                     cache_for_wechat,
+                    mcp_for_wechat,
                 )
                 .await;
             });
 
-            // 注册 MCP 运行时管理器（纯运行时，不依赖 DB）
-            let mcp_manager = Arc::new(provider::mcp::McpManager::new(
-                reqwest::Client::builder()
-                    .timeout(std::time::Duration::from_secs(300))
-                    .build()
-                    .expect("Failed to build reqwest client for MCP"),
-            ));
-            app.manage(mcp_manager.clone());
-
-            // 启动时重置 operating 为 idle（上次运行时的连接已失效）
+            // 启动时重置 operating 为 idle（上次运行时的连接已失效），然后自动恢复所有已启用的 MCP 连接
+            let mcp_for_startup = Arc::clone(&mcp_manager);
             tauri::async_runtime::spawn(async move {
                 let db = match db_state.get().await {
                     Ok(db) => db,
                     Err(e) => {
-                        tracing::error!("[McpService] startup reset: failed to get DB: {}", e);
+                        tracing::error!("[McpService] startup: failed to get DB: {}", e);
                         return;
                     }
                 };
                 services::mcp_service::reset_all_operating_on_startup(&db).await;
+                match services::mcp_service::resume_all_enabled(&db, &mcp_for_startup).await {
+                    Ok(results) => {
+                        for r in &results {
+                            if r.success {
+                                tracing::info!("[McpService] startup: '{}' connected", r.name);
+                            } else {
+                                tracing::warn!("[McpService] startup: '{}' failed: {:?}", r.name, r.error_msg);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("[McpService] startup: resume_all_enabled error: {}", e);
+                    }
+                }
             });
 
             Ok(())

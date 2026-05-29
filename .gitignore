@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Tauri runtime files
+src-tauri/.playwright-mcp
+src-tauri/app-cache

@@ -18,6 +18,7 @@ import { cn } from "@/lib/utils";
 import {
   isTauriRuntime,
   streamLlmChat,
+  type LlmChunkPayload,
 } from "@/lib/api/tauri-llm";
 import {
   IconAdjustmentsHorizontal,
@@ -45,6 +46,68 @@ import {
   CommandList,
 } from "@/components/ui/command";
 
+// 渲染 LLM chunk 事件的辅助函数
+function renderChunkEvent(payload: LlmChunkPayload): React.ReactNode {
+  switch (payload.kind) {
+    case "reasoning_delta":
+      return <span className="text-blue-400">[思考] {payload.text}</span>;
+
+    case "tool_call_start":
+      return <span className="text-orange-400">[工具开始] {payload.name}</span>;
+
+    case "tool_call_delta":
+      return <span className="text-yellow-400">[工具参数] {payload.arguments}</span>;
+
+    case "tool_call_done":
+      return (
+        <span className="text-orange-400">
+          [工具完成] 参数: {JSON.stringify(payload.arguments)}
+        </span>
+      );
+
+    case "tool_result":
+      return (
+        <span className={payload.success ? "text-green-400" : "text-red-400"}>
+          [工具结果-{payload.success ? "成功" : "失败"}] {payload.name}: {JSON.stringify(payload.result)}
+        </span>
+      );
+
+    case "reference":
+      return (
+        <span className="text-purple-400">
+          [引用] {payload.title} - {payload.url}
+        </span>
+      );
+
+    case "audio_delta":
+      return <span className="text-cyan-400">[音频] {payload.format}</span>;
+
+    case "usage":
+      return (
+        <span className="text-gray-400">
+          [使用量] 输入: {payload.input_tokens}, 输出: {payload.output_tokens}
+          {payload.reasoning_tokens !== undefined && `, 思考: ${payload.reasoning_tokens}`}
+        </span>
+      );
+
+    case "metadata":
+      return (
+        <span className="text-gray-400">
+          [元数据] 模型: {payload.model}, 结束原因: {payload.finish_reason || "无"}
+        </span>
+      );
+
+    case "error":
+      return <span className="text-red-400">[错误] {payload.code}: {payload.message}</span>;
+
+    case "warning":
+      return <span className="text-yellow-400">[警告] {payload.code}: {payload.message}</span>;
+
+    default:
+      return null;
+  }
+}
+
 // Props 接口
 interface Ai05Props {
   account: AccountInfo | null
@@ -55,6 +118,15 @@ interface DemoMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+  /** 额外的流式事件（如工具调用） */
+  extra?: LlmChunkPayload[];
+}
+
+interface ToolCallState {
+  index: number;
+  id: string;
+  name: string;
+  arguments: string;
 }
 
 const INITIAL_MESSAGES: DemoMessage[] = [
@@ -177,9 +249,11 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
     }
 
     const assistantId = `assistant-${nanoid()}`;
+    const toolCallBuffer: Map<number, ToolCallState> = new Map();
+
     setMessages((prev) => [
       ...prev,
-      { id: assistantId, role: "assistant", content: "" },
+      { id: assistantId, role: "assistant", content: "", extra: [] },
     ]);
 
     try {
@@ -189,14 +263,103 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
         messages: [{ role: "user" as const, content: text }],
         onChunk: (payload) => {
           console.log("onChunk:", payload);
-          if (payload.kind === "text_delta") {
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantId
-                  ? { ...m, content: m.content + payload.text }
-                  : m
-              )
-            );
+
+          switch (payload.kind) {
+            case "text_delta":
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId
+                    ? { ...m, content: m.content + payload.text }
+                    : m
+                )
+              );
+              break;
+
+            case "tool_call_start":
+              toolCallBuffer.set(payload.index, {
+                index: payload.index,
+                id: payload.id,
+                name: payload.name,
+                arguments: "",
+              });
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId
+                    ? {
+                        ...m,
+                        extra: [...(m.extra || []), payload],
+                      }
+                    : m
+                )
+              );
+              break;
+
+            case "tool_call_delta":
+              const tc = toolCallBuffer.get(payload.index);
+              if (tc) {
+                tc.arguments += payload.arguments;
+              }
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId
+                    ? {
+                        ...m,
+                        extra: [...(m.extra || []), payload],
+                      }
+                    : m
+                )
+              );
+              break;
+
+            case "tool_call_done":
+              toolCallBuffer.delete(payload.index);
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId
+                    ? {
+                        ...m,
+                        extra: [...(m.extra || []), payload],
+                      }
+                    : m
+                )
+              );
+              break;
+
+            case "tool_result":
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId
+                    ? {
+                        ...m,
+                        extra: [...(m.extra || []), payload],
+                      }
+                    : m
+                )
+              );
+              break;
+
+            case "reasoning_delta":
+            case "reference":
+            case "audio_delta":
+            case "usage":
+            case "metadata":
+            case "warning":
+            case "error":
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId
+                    ? {
+                        ...m,
+                        extra: [...(m.extra || []), payload],
+                      }
+                    : m
+                )
+              );
+              break;
+
+            case "done":
+              // done 事件不做额外处理
+              break;
           }
         },
         onStreamError: (payload) => {
@@ -211,7 +374,7 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
         },
         onStreamEnd: async () => {
           // LLM 流结束时，保存 assistant 回复到数据库
-       
+
         },
       });
     } catch (e) {
@@ -333,6 +496,17 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
                       <p className="whitespace-pre-wrap text-pretty">
                         {message.content}
                       </p>
+                    )}
+                    {/* 显示额外的事件（如工具调用） */}
+                    {message.extra && message.extra.length > 0 && (
+                      <div className="mt-2 border-t border-border/50 pt-2 text-xs">
+                        <p className="font-medium text-muted-foreground mb-1">事件记录:</p>
+                        {message.extra.map((evt, i) => (
+                          <div key={i} className="py-1 text-muted-foreground">
+                            {renderChunkEvent(evt)}
+                          </div>
+                        ))}
+                      </div>
                     )}
                   </MessageContent>
                 </Message>

@@ -8,10 +8,10 @@ use futures_util::StreamExt;
 use serde_json::{json, Value};
 use tokio::time::timeout;
 
-use super::error::LlmError;
-use super::provider_trait::{LlmProvider, LlmStream};
-use super::stream::LlmStreamEvent;
-use super::types::{ChatMessage, ChatRequest, Role};
+use crate::provider::llm::error::LlmError;
+use crate::provider::llm::llm_event::LlmStreamEvent;
+use crate::provider::llm::providers::provider_trait::{LlmProvider, LlmStream};
+use crate::provider::llm::types::{ChatMessage, ChatRequest, Role, ToolDefinition};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
@@ -22,6 +22,9 @@ fn anthropic_role(r: Role) -> Result<&'static str, LlmError> {
         )),
         Role::User => Ok("user"),
         Role::Assistant => Ok("assistant"),
+        Role::Tool => Err(LlmError::Config(
+            "Anthropic does not support tool role messages in the same request".into(),
+        )),
     }
 }
 
@@ -48,11 +51,21 @@ fn split_system(messages: &[ChatMessage]) -> (Option<String>, Vec<ChatMessage>) 
 pub struct AnthropicProvider {
     client: reqwest::Client,
     api_key: String,
+    model: String,
 }
 
 impl AnthropicProvider {
     pub fn new(client: reqwest::Client, api_key: String) -> Self {
-        Self { client, api_key }
+        Self { client, api_key, model: String::new() }
+    }
+
+    pub fn with_model(mut self, model: String) -> Self {
+        self.model = model;
+        self
+    }
+
+    fn model(&self) -> &str {
+        &self.model
     }
 
     fn messages_for_api(messages: &[ChatMessage]) -> Result<Vec<Value>, LlmError> {
@@ -65,6 +78,22 @@ impl AnthropicProvider {
             }));
         }
         Ok(out)
+    }
+
+    fn convert_tools_to_provider(
+        tools: &[ToolDefinition],
+    ) -> Result<Vec<serde_json::Value>, LlmError> {
+        // Anthropic 使用 tools 字段，格式略有不同
+        // https://docs.anthropic.com/en/docs/build-with-claude/tool-use/overview
+        tools.iter()
+            .map(|t| {
+                Ok(json!({
+                    "name": t.function.name,
+                    "description": t.function.description,
+                    "input_schema": t.function.parameters,
+                }))
+            })
+            .collect()
     }
 }
 

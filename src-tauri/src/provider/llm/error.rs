@@ -16,4 +16,7 @@ pub enum LlmError {
 
     #[error("unsupported provider configuration: {0}")]
     Config(String),
+
+    #[error("parse error: {0}")]
+    ParseError(String),
 }

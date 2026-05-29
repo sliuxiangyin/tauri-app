@@ -18,7 +18,24 @@ export type ProviderConfigPayload =
 
 export type LlmChunkPayload =
   | { account_id: string; kind: "text_delta"; text: string }
-  | { account_id: string; kind: "done" };
+  | { account_id: string; kind: "done" }
+  // 思考链
+  | { account_id: string; kind: "reasoning_delta"; text: string }
+  // 工具调用
+  | { account_id: string; kind: "tool_call_start"; index: number; id: string; name: string }
+  | { account_id: string; kind: "tool_call_delta"; index: number; arguments: string }
+  | { account_id: string; kind: "tool_call_done"; index: number; arguments: unknown }
+  | { account_id: string; kind: "tool_result"; call_id: string; name: string; result: unknown; success: boolean }
+  // 引用
+  | { account_id: string; kind: "reference"; source_type: string; title: string; url: string; snippet?: string }
+  // 音频
+  | { account_id: string; kind: "audio_delta"; data: string; format: string }
+  // 错误与警告
+  | { account_id: string; kind: "error"; code: string; message: string }
+  | { account_id: string; kind: "warning"; code: string; message: string }
+  // 元数据
+  | { account_id: string; kind: "usage"; input_tokens: number; output_tokens: number; reasoning_tokens?: number }
+  | { account_id: string; kind: "metadata"; model: string; finish_reason?: string; request_id?: string };
 
 export type LlmErrorPayload = {
   account_id: string;

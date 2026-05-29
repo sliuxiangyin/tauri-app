@@ -3,12 +3,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use super::anthropic::AnthropicProvider;
-use super::error::LlmError;
-use super::ollama::OllamaProvider;
-use super::openai_compatible::OpenAiCompatible;
-use super::provider_trait::{LlmProvider, LlmStream};
-use super::types::{ChatRequest, ProviderConfigPayload};
+use crate::provider::llm::error::LlmError;
+use crate::provider::llm::providers::provider_trait::{LlmProvider, LlmStream};
+use crate::provider::llm::types::{ChatRequest, ProviderConfigPayload};
+use crate::provider::llm::providers::{AnthropicProvider, OllamaProvider, OpenAiCompatible};
 
 pub enum Provider {
     OpenAiCompatible(OpenAiCompatible),

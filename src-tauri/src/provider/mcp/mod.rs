@@ -1,13 +1,66 @@
 //! MCP 纯运行时连接管理器
 //!
-//! 职责：
-//! - 管理多个 MCP 服务器的活跃连接（连接池）
-//! - 提供连接生命周期操作（connect / disconnect / restart）
-//! - 工具调用代理（call_tool / list_tools）
-//! - 健康状态查询
-//! - 事件推送
+//! ## 模块结构
 //!
-//! 不依赖数据库，所有配置由外部调用方传入。
+//! ```text
+//! ┌─────────────────────────────────────────────────────────────┐
+//! │                        McpManager                            │
+//! │                    (连接池管理器)                            │
+//! │  ┌─────────────────────────────────────────────────────┐   │
+//! │  │ connections: RwLock<HashMap<String, Arc<McpConnection>>>│
+//! │  └─────────────────────────────────────────────────────┘   │
+//! │                                                             │
+//! │  事件总线: McpEventBus (broadcast channel)                  │
+//! └─────────────────────────────────────────────────────────────┘
+//!                              │
+//!                              ▼
+//! ┌─────────────────────────────────────────────────────────────┐
+//! │                      McpConnection                           │
+//! │                    (单连接生命周期)                          │
+//! │  ┌─────────────────────────────────────────────────────┐   │
+//! │  │ service: Mutex<Option<RunningService<RoleClient, ()>>>│
+//! │  └─────────────────────────────────────────────────────┘   │
+//! │                                                             │
+//! │  熔断器: CircuitBreaker                                     │
+//! │  心跳监控: 后台任务 (heartbeat_running)                      │
+//! └─────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! ## 职责
+//!
+//! - **连接池管理**: 管理多个 MCP 服务器的活跃连接
+//! - **生命周期操作**: connect / disconnect / restart
+//! - **工具调用代理**: call_tool / list_tools
+//! - **健康检测**: 后台心跳监控，自动重连
+//! - **事件推送**: 通过 McpEventBus 推送状态变更
+//!
+//! ## 设计原则
+//!
+//! - 不依赖数据库，所有配置由外部调用方传入
+//! - STDIO 模式下自动启用心跳保活机制
+//! - 熔断器防止反复重连已宕机的服务
+//! - 纯被动式连接策略：由前端显式触发连接
+//!
+//! ## 使用示例
+//!
+//! ```rust,ignore
+//! use crate::provider::mcp::{McpManager, TransportConfig};
+//!
+//! let mcp = Arc::new(McpManager::new(http_client));
+//!
+//! // 连接 MCP 服务
+//! mcp.connect("playwright", TransportConfig::Stdio {
+//!     command: "npx".to_string(),
+//!     args: vec!["-y".to_string(), "@modelcontextprotocol/server-playwright".to_string()],
+//!     env: HashMap::new(),
+//! }).await?;
+//!
+//! // 调用工具
+//! let result = mcp.call_tool("playwright", params).await?;
+//!
+//! // 获取状态
+//! let status = mcp.get_status("playwright");
+//! ```
 
 pub mod circuit;
 pub mod connection;
@@ -21,7 +74,7 @@ use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
-pub use connection::{McpConnection, McpStatus, TransportConfig};
+pub use connection::{HeartbeatConfig, McpConnection, McpStatus, TransportConfig};
 pub use error::{McpError, McpResult};
 pub use event::{McpEvent, McpEventBus, SharedEventBus};
 
@@ -34,16 +87,14 @@ pub use event::{McpEvent, McpEventBus, SharedEventBus};
 pub struct McpManager {
     connections: RwLock<HashMap<String, Arc<McpConnection>>>,
     events: SharedEventBus,
-    http_client: reqwest::Client,
 }
 
 impl McpManager {
     /// 创建新的 MCP 管理器
-    pub fn new(http_client: reqwest::Client) -> Self {
+    pub fn new() -> Self {
         Self {
             connections: RwLock::new(HashMap::new()),
             events: Arc::new(McpEventBus::new()),
-            http_client,
         }
     }
 
@@ -83,7 +134,6 @@ impl McpManager {
                 let new_conn = Arc::new(McpConnection::new(
                     name.to_string(),
                     config.clone(),
-                    self.http_client.clone(),
                     self.events.clone(),
                 ));
                 let mut map = self.connections.write().unwrap();
@@ -221,11 +271,30 @@ impl McpManager {
 
     // ─── 内部方法 ──────────────────────────────────────────
 
+    /// 获取所有连接的工具总数
+    pub fn get_tools_count(&self) -> usize {
+        let map = self.connections.read().unwrap();
+        map.len()
+    }
+
     /// 从连接池获取指定连接
     fn get_connection(&self, name: &str) -> McpResult<Arc<McpConnection>> {
         let map = self.connections.read().unwrap();
         map.get(name)
             .cloned()
             .ok_or_else(|| McpError::NotFound(name.to_string()))
+    }
+}
+
+/// From 实现：允许 &McpManager 转换为 Arc<McpManager>
+impl From<&McpManager> for Arc<McpManager> {
+    fn from(m: &McpManager) -> Self {
+        // SAFETY: 从 &T 转换为 Arc<T> 是安全的
+        // Arc::increment_strong_count 会增加引用计数（假设 &McpManager 来自某个 Arc）
+        unsafe {
+            let ptr = std::ptr::from_ref(m);
+            Arc::increment_strong_count(ptr);
+            Arc::from_raw(ptr)
+        }
     }
 }

@@ -10,6 +10,8 @@
 use std::sync::Arc;
 
 use crate::provider::cache::Cache;
+use crate::provider::llm::types::ToolDefinition;
+use crate::provider::mcp::McpManager;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
@@ -181,4 +183,80 @@ pub fn batch_get_tools_config(
         .into_iter()
         .map(|(account_id, session_id)| load_config(&cache, &account_id, &session_id))
         .collect()
+}
+
+// ─── 工具过滤与转换 ─────────────────────────────────────────
+
+/// 获取指定会话的可用工具列表
+///
+/// 流程：
+/// 1. 从 McpManager 获取所有运行中的连接
+/// 2. 遍历每个连接，收集所有工具
+/// 3. 根据 ChatToolsConfig 过滤被禁用的 server/tool
+/// 4. 转换为统一的 ToolDefinition 格式
+pub async fn get_enabled_tools(
+    mcp_manager: &McpManager,
+    cache: &Cache,
+    account_id: &str,
+    session_id: &str,
+) -> Vec<ToolDefinition> {
+    // 加载工具配置
+    let config = load_config(cache, account_id, session_id);
+    let mut tools = Vec::new();
+
+    // 获取所有运行中的连接
+    let connections = {
+        // McpManager 的 connections 是 RwLock，通过 list_all_status 获取活跃的名称
+        // 然后逐个获取工具
+        let statuses = mcp_manager.list_all_status();
+        statuses
+            .into_iter()
+            .filter(|s| s.health == "connected")
+            .map(|s| s.name)
+            .collect::<Vec<_>>()
+    };
+
+    for name in connections {
+        // 检查 server 是否被禁用
+        if config.is_server_disabled(&name) {
+            debug!("[get_enabled_tools] server '{}' is disabled", name);
+            continue;
+        }
+
+        // 获取该 server 的工具列表
+        match mcp_manager.get_tools(&name).await {
+            Ok(mcp_tools) => {
+                for tool in mcp_tools {
+                    let tool_name = tool.name.clone();
+                    // 检查单个工具是否被禁用
+                    if config.is_tool_disabled(&name, &tool_name) {
+                        debug!("[get_enabled_tools] tool '{}/{}' is disabled", name, tool_name);
+                        continue;
+                    }
+
+                    // MCP Tool 的 input_schema 是 Arc<serde_json::Map>
+                    let input_schema = serde_json::Value::Object((*tool.input_schema).clone());
+                    // 转换为统一格式（MCP 标准格式: "mcp__server__tool"）
+                    // 例如: "mcp__browser__navigate", "mcp__playwright__click"
+                    let mcp_tool_name = format!("mcp__{}__{}", name, tool_name);
+                    tools.push(ToolDefinition::from_mcp(
+                        &mcp_tool_name,
+                        tool.description.as_deref(),
+                        input_schema,
+                    ));
+                }
+            }
+            Err(e) => {
+                warn!("[get_enabled_tools] failed to get tools from '{}': {}", name, e);
+            }
+        }
+    }
+
+    debug!(
+        "[get_enabled_tools] total enabled tools: {} (account={}, session={})",
+        tools.len(),
+        account_id,
+        session_id
+    );
+    tools
 }

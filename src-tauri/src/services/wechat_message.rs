@@ -15,12 +15,14 @@ use tracing::{error, info, warn};
 use crate::db::DbState;
 use crate::provider::cache::Cache;
 use crate::provider::llm::types::Role;
+use crate::provider::mcp::McpManager;
 use crate::services::llm_service::{self, ChatMessage};
 use crate::provider::server::WebhookChannel;
 use crate::provider::wechat::{WechatClient, SendMessageRequest};
 use crate::types::chat::ChatContext;
 
 /// 启动微信消息监听服务
+///
 /// 在后台持续从 broadcast 通道接收消息，执行以下操作：
 /// 1. 消息落库（chat_type='wechat', role='user'）
 /// 2. 推送事件到前端
@@ -33,10 +35,14 @@ pub async fn start_wechat_message_service(
     channel: Arc<WebhookChannel>,
     wechat_client: WechatClient,
     _cache: Arc<Cache>,
+    mcp_manager: Arc<McpManager>,
 ) {
     let mut rx = channel.subscribe();
 
     info!("[WechatMessageService] 启动微信消息监听服务");
+
+    // 克隆 Arc 用于循环中传入（每次迭代需要所有权）
+    let mcp_manager_inner = mcp_manager.clone();
 
     while let Ok(payload) = rx.recv().await {
         let account_id = payload.account_id.clone();
@@ -56,11 +62,15 @@ pub async fn start_wechat_message_service(
             messages: vec![ChatMessage {
                 role: Role::User,
                 content: body.clone(),
+                tool_call_id: None,
+                name: None,
+                tool_calls: None,
             }],
         };
 
         let (reply, status) = match llm_service::chat_with_placeholder(
             &db_state,
+            mcp_manager_inner.clone(),
             ctx,
             None, // 微信渠道不需要流式推送，只关心最终结果
             Arc::new(AtomicBool::new(false)), // 微信渠道不需要取消

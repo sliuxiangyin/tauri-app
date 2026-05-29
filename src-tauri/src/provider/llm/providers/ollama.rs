@@ -8,10 +8,10 @@ use futures_util::StreamExt;
 use serde_json::{json, Value};
 use tokio::time::timeout;
 
-use super::error::LlmError;
-use super::provider_trait::{LlmProvider, LlmStream};
-use super::stream::LlmStreamEvent;
-use super::types::{ChatMessage, ChatRequest, Role};
+use crate::provider::llm::error::LlmError;
+use crate::provider::llm::llm_event::LlmStreamEvent;
+use crate::provider::llm::providers::provider_trait::{LlmProvider, LlmStream};
+use crate::provider::llm::types::{ChatMessage, ChatRequest, Role, ToolDefinition};
 
 fn join_url(base: &str, path: &str) -> String {
     let b = base.trim_end_matches('/');
@@ -23,17 +23,28 @@ fn role_str(r: Role) -> &'static str {
         Role::System => "system",
         Role::User => "user",
         Role::Assistant => "assistant",
+        Role::Tool => "tool", // Ollama 支持 tool role
     }
 }
 
 pub struct OllamaProvider {
     client: reqwest::Client,
     base_url: String,
+    model: String,
 }
 
 impl OllamaProvider {
     pub fn new(client: reqwest::Client, base_url: String) -> Self {
-        Self { client, base_url }
+        Self { client, base_url, model: String::new() }
+    }
+
+    pub fn with_model(mut self, model: String) -> Self {
+        self.model = model;
+        self
+    }
+
+    fn model(&self) -> &str {
+        &self.model
     }
 
     fn messages_json(messages: &[ChatMessage]) -> Vec<Value> {
@@ -44,6 +55,23 @@ impl OllamaProvider {
                     "role": role_str(m.role),
                     "content": m.content,
                 })
+            })
+            .collect()
+    }
+
+    fn convert_tools_to_provider(
+        tools: &[ToolDefinition],
+    ) -> Result<Vec<serde_json::Value>, LlmError> {
+        // Ollama 通过 Anthropic 兼容模式支持工具
+        // https://docs.ollama.com/api/anthropic-compatibility
+        // 格式与 Anthropic 相同
+        tools.iter()
+            .map(|t| {
+                Ok(json!({
+                    "name": t.function.name,
+                    "description": t.function.description,
+                    "input_schema": t.function.parameters,
+                }))
             })
             .collect()
     }
