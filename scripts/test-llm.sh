@@ -56,17 +56,18 @@ while [[ $# -gt 0 ]]; do
 done
 
 # 构建测试命令（使用 cmd.exe 执行 cargo）
+# --release 需要放在 cargo test 之后，而不是 -- 之后
 cd /d/apps/wclaw-v2/tauri-app/src-tauri
 if [[ -n "$TEST" ]]; then
-    TEST_CMD="cargo test --lib -- --ignored --nocapture $TEST"
+    TEST_CMD="cargo test --release --lib -- --ignored --nocapture $TEST"
 elif [[ -n "$IGNORED" ]]; then
-    TEST_CMD="cargo test --lib -- --ignored --nocapture"
+    TEST_CMD="cargo test --release --lib -- --ignored --nocapture"
 elif [[ -n "$REAL" ]]; then
-    TEST_CMD="cargo test --lib -- --ignored --nocapture test_intent_real_with_llm"
+    TEST_CMD="cargo test --release --lib -- --ignored --nocapture test_intent_real_with_llm"
 elif [[ -n "$ALL" ]]; then
-    TEST_CMD="cargo test --lib -- --ignored --nocapture"
+    TEST_CMD="cargo test --release --lib -- --ignored --nocapture"
 else
-    TEST_CMD="cargo test --lib -- --nocapture llm_service_test"
+    TEST_CMD="cargo test --release --lib -- --nocapture llm_service_test"
 fi
 
 echo "运行命令: $TEST_CMD"

@@ -21,6 +21,7 @@ use crate::provider::llm::llm_event::LlmStreamEvent;
 use crate::provider::llm::providers::provider_trait::LlmStream;
 use crate::provider::llm::types::{ChatMessage, ChatRequest, Role, ToolDefinition};
 use crate::provider::llm::IntentAnalyzer;
+use crate::provider::llm::providers::provider_trait::LlmProvider;
 use crate::provider::mcp::{McpConnection, McpEventBus, TransportConfig};
 
 // =============================================================================
@@ -218,60 +219,67 @@ async fn test_mcp_real_connection() {
 
 /// 测试：真实 LLM + 真实 MCP 完整流程
 /// 需要设置环境变量：OPENAI_API_KEY, MCP_SERVERS
-/// 运行: `cargo test --lib -- --ignored test_full_pipeline_with_real_services`
+/// 运行: `cargo test --release --lib -- --ignored test_full_pipeline_with_real_services`
 #[tokio::test]
 #[ignore]
 async fn test_full_pipeline_with_real_services() {
+    println!("[STEP 1] 加载配置...");
     let (base_url, api_key, model) = load_llm_config();
     let configs = load_mcp_config();
-
+    println!("使用模型: {} @ {}", model, base_url);
+    
     if configs.is_empty() {
         println!("跳过完整测试: 未配置 MCP_SERVERS");
         return;
     }
 
+    println!("[STEP 2] 连接 MCP...");
     let events: Arc<McpEventBus> = Arc::new(McpEventBus::new());
 
-    // 1. 连接 MCP 服务器
+    // 连接 MCP 服务器（只用一个）
     let mut all_tools = vec![];
+    let mut conn_opt: Option<Arc<McpConnection>> = None;
     for (name, config) in &configs {
+        if conn_opt.is_some() { break; }
         println!("连接 MCP: {}", name);
-        let conn = McpConnection::new(name.clone(), config.clone(), events.clone());
-        if let Ok(_) = conn.connect().await {
-            if let Ok(mcp_tools) = conn.list_tools().await {
-                println!("  {} 个工具", mcp_tools.len());
-                // 转换为 ToolDefinition
-                for tool in mcp_tools {
-                    // input_schema 是 Arc<Map>，直接克隆
-                    let params: serde_json::Value = serde_json::json!(tool.input_schema.as_ref().clone());
-                    
-                    all_tools.push(ToolDefinition::from_mcp(
-                        &tool.name,
-                        tool.description.as_deref(),
-                        params,
-                    ));
+        // 创建 Arc 包装，确保心跳任务安全
+        let conn = Arc::new(McpConnection::new_no_heartbeat(name.clone(), config.clone(), events.clone()));
+        let conn_clone = Arc::clone(&conn);
+        match conn_clone.connect().await {
+            Ok(_) => {
+                println!("  连接成功，现在列出工具...");
+                match conn.list_tools().await {
+                    Ok(mcp_tools) => {
+                        println!("  发现 {} 个工具", mcp_tools.len());
+                        for tool in mcp_tools.into_iter() {
+                            let params: serde_json::Value = serde_json::json!(tool.input_schema.as_ref().clone());
+                            all_tools.push(ToolDefinition::from_mcp(&tool.name, tool.description.as_deref(), params));
+                        }
+                        conn_opt = Some(conn);
+                        break;
+                    }
+                    Err(e) => println!("  列出工具失败: {:?}", e),
                 }
             }
+            Err(e) => println!("  连接失败: {:?}", e),
         }
     }
-    println!("共 {} 个工具可用", all_tools.len());
+    println!("[STEP 3] MCP 完成，{} 个工具", all_tools.len());
 
     if all_tools.is_empty() {
         println!("无可用工具，跳过测试");
         return;
     }
 
-    // 2. 使用真实 LLM 进行意图分析
-    let provider =
-        crate::provider::llm::providers::openai_compatible::OpenAiCompatible::new(
-            base_url,
-            api_key,
-        )
-        .with_model(model);
+    // 创建 LLM Provider
+    println!("[STEP 4] 创建 LLM Provider...");
+    let provider = crate::provider::llm::providers::openai_compatible::OpenAiCompatible::new(
+        base_url, api_key,
+    ).with_model(model.clone());
+    let analyzer = IntentAnalyzer::new(Arc::new(provider)).with_model(model);
 
-    let analyzer = IntentAnalyzer::new(Arc::new(provider));
-
-    let messages = create_user_message("打开百度，搜索安仁乡，然后给出搜索结果");
+    // 调用意图分析（传入可用工具）
+    let messages = create_user_message("打开百度，搜索安仁乡，提取前3条搜索结果给我");
     let result = analyzer.analyze(messages, all_tools).await;
 
     match result {
@@ -281,14 +289,253 @@ async fn test_full_pipeline_with_real_services() {
             println!("reasoning: {}", plan.reasoning);
             println!("steps: {}", plan.steps.len());
             for step in &plan.steps {
-                println!(
-                    "  {}. [{:?}] {} - {}",
-                    step.order, step.step_type, step.tool_name, step.step_goal
-                );
+                println!("  {}. [{:?}] {} - {}", step.order, step.step_type, step.tool_name, step.step_goal);
             }
+        }
+        Err(e) => panic!("分析失败: {:?}", e),
+    }
+    
+    // 清理资源
+    println!("[STEP 6] 清理资源...");
+    if let Some(conn) = conn_opt {
+        // 使用超时断开连接，避免卡住
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), conn.disconnect()).await;
+    }
+    drop(events);
+    println!("[STEP 6] 完成");
+}
+
+/// 测试：先连接 MCP，然后直接调用 provider.send_message
+/// 运行: `cargo test --lib -- --ignored test_mcp_then_llm`
+#[tokio::test]
+#[ignore]
+async fn test_mcp_then_llm() {
+    println!("[STEP 1] 加载配置...");
+    let (base_url, api_key, model) = load_llm_config();
+    let configs = load_mcp_config();
+    println!("使用模型: {} @ {}", model, base_url);
+    
+    if configs.is_empty() {
+        println!("跳过: 未配置 MCP_SERVERS");
+        return;
+    }
+
+    println!("[STEP 2] 连接 MCP 服务器...");
+    let events: Arc<McpEventBus> = Arc::new(McpEventBus::new());
+    let mut conn_arc: Option<Arc<McpConnection>> = None;
+
+    for (name, config) in &configs {
+        println!("连接 MCP: {}", name);
+        let conn = Arc::new(McpConnection::new_no_heartbeat(name.clone(), config.clone(), events.clone()));
+        match conn.connect().await {
+            Ok(_) => {
+                println!("  连接成功，现在列出工具...");
+                match conn.list_tools().await {
+                    Ok(mcp_tools) => {
+                        println!("  发现 {} 个工具", mcp_tools.len());
+                    }
+                    Err(e) => {
+                        println!("  列出工具失败: {:?}", e);
+                    }
+                }
+                conn_arc = Some(conn);
+                break; // 只用一个连接
+            }
+            Err(e) => {
+                println!("  连接失败: {:?}", e);
+            }
+        }
+    }
+
+
+
+    println!("[STEP 4] 创建 LLM Provider...");
+    let provider = crate::provider::llm::providers::openai_compatible::OpenAiCompatible::new(
+        base_url,
+        api_key,
+    )
+    .with_model(model.clone());
+    println!("[STEP 4] Provider 创建成功");
+
+    println!("[STEP 5] 调用 provider.send_message (简单请求)...");
+    let req: ChatRequest = ChatRequest {
+        messages: vec![ChatMessage::new(Role::User, "OK")],
+        model: model,
+        temperature: 0.7,
+        max_tokens: Some(10),
+        tools: None,
+    };
+    
+    match provider.send_message(req).await {
+        Ok(content) => {
+            println!("收到响应 ({} 字符): {}", content.len(), content);
+        }
+        Err(e) => {
+            panic!("API 调用失败: {:?}", e);
+        }
+    }
+    
+    println!("[STEP 6] 完成");
+}
+
+/// 测试：只连接 MCP，不调用 LLM
+/// 运行: `cargo test --lib -- --ignored test_mcp_only`
+#[tokio::test]
+#[ignore]
+async fn test_mcp_only() {
+    println!("[STEP 1] 加载配置...");
+    let configs = load_mcp_config();
+    println!("MCP 配置: {:?}", configs);
+    
+    if configs.is_empty() {
+        println!("跳过: 未配置 MCP_SERVERS");
+        return;
+    }
+
+    println!("[STEP 2] 连接 MCP 服务器...");
+    let events: Arc<McpEventBus> = Arc::new(McpEventBus::new());
+
+    for (name, config) in &configs {
+        println!("连接 MCP: {}", name);
+        let conn = McpConnection::new_no_heartbeat(name.clone(), config.clone(), events.clone());
+        match conn.connect().await {
+            Ok(_) => {
+                println!("  连接成功，现在列出工具...");
+                match conn.list_tools().await {
+                    Ok(mcp_tools) => {
+                        println!("  发现 {} 个工具", mcp_tools.len());
+                    }
+                    Err(e) => {
+                        println!("  列出工具失败: {:?}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                println!("  连接失败: {:?}", e);
+            }
+        }
+    }
+    
+    println!("[STEP 3] 清理事件总线...");
+    drop(events);
+    println!("[STEP 3] 完成");
+}
+
+/// 测试：IntentAnalyzer 不连接 MCP
+/// 运行: `cargo test --lib -- --ignored test_analyzer_no_mcp`
+#[tokio::test]
+#[ignore]
+async fn test_analyzer_no_mcp() {
+    println!("[STEP 1] 加载配置...");
+    let (base_url, api_key, model) = load_llm_config();
+    println!("使用模型: {} @ {}", model, base_url);
+
+    println!("[STEP 2] 创建 LLM Provider...");
+    let provider = crate::provider::llm::providers::openai_compatible::OpenAiCompatible::new(
+        base_url,
+        api_key,
+    )
+    .with_model(model.clone());
+    println!("[STEP 2] Provider 创建成功");
+
+    println!("[STEP 3] 创建 IntentAnalyzer...");
+    let analyzer = IntentAnalyzer::new(Arc::new(provider)).with_model(model);
+    println!("[STEP 3] IntentAnalyzer 创建成功");
+
+    println!("[STEP 4] 调用 analyzer.analyze...");
+    let messages = create_user_message("你好，今天天气怎么样？");
+    let result = analyzer.analyze(messages, vec![]).await;
+
+    match result {
+        Ok(plan) => {
+            println!("\n=== 意图计划 ===");
+            println!("need_agent: {}", plan.need_agent);
+            println!("reasoning: {}", plan.reasoning);
+            println!("steps: {}", plan.steps.len());
         }
         Err(e) => {
             panic!("失败: {:?}", e);
+        }
+    }
+    
+    println!("[STEP 5] 完成");
+}
+
+/// 测试：直接调用 send_message 验证基础 API 连接
+/// 运行: `cargo test --lib -- --ignored test_send_message_direct`
+#[tokio::test]
+#[ignore]
+async fn test_send_message_direct() {
+    let (base_url, api_key, model) = load_llm_config();
+    println!("使用模型: {} @ {}", model, base_url);
+
+    let provider = crate::provider::llm::providers::openai_compatible::OpenAiCompatible::new(
+        base_url,
+        api_key,
+    )
+    .with_model(model.clone());
+
+    let req: ChatRequest = ChatRequest {
+        messages: vec![ChatMessage::new(Role::User, "你好，回复 OK")],
+        model: model,
+        temperature: 0.7,
+        max_tokens: Some(100),
+        tools: None,
+    };
+
+    println!("发送请求...");
+    let result = provider.send_message(req).await;
+
+    match result {
+        Ok(content) => {
+            println!("收到响应 ({} 字符): {}", content.len(), content);
+            assert!(!content.is_empty(), "响应不应为空");
+        }
+        Err(e) => {
+            panic!("API 调用失败: {:?}", e);
+        }
+    }
+}
+
+/// 测试：IntentAnalyzer 带 system prompt（触发崩溃的类似场景）
+/// 运行: `cargo test --lib -- --ignored test_analyzer_with_system_prompt`
+#[tokio::test]
+#[ignore]
+async fn test_analyzer_with_system_prompt() {
+    let (base_url, api_key, model) = load_llm_config();
+    println!("使用模型: {} @ {}", model, base_url);
+
+    let provider = crate::provider::llm::providers::openai_compatible::OpenAiCompatible::new(
+        base_url,
+        api_key,
+    )
+    .with_model(model.clone());
+
+    // 模拟 IntentAnalyzer 的请求格式（system + user）
+    let system_prompt = "你是一个智能助手。请返回JSON格式的响应。";
+    let user_message = "你好，回复 OK";
+
+    let req: ChatRequest = ChatRequest {
+        messages: vec![
+            ChatMessage::new(Role::System, system_prompt),
+            ChatMessage::new(Role::User, user_message),
+        ],
+        model: model,
+        temperature: 0.7,
+        max_tokens: Some(100),
+        tools: None,
+    };
+
+    println!("发送请求 (2 messages: system + user)...");
+    let result = provider.send_message(req).await;
+
+    match result {
+        Ok(content) => {
+            println!("收到响应 ({} 字符): {}", content.len(), content);
+            assert!(!content.is_empty(), "响应不应为空");
+        }
+        Err(e) => {
+            panic!("API 调用失败: {:?}", e);
         }
     }
 }

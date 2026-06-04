@@ -17,6 +17,9 @@ pub enum LlmError {
     #[error("unsupported provider configuration: {0}")]
     Config(String),
 
+    #[error("request timeout after 30 seconds")]
+    Timeout,
+
     #[error("parse error: {0}")]
     ParseError(String),
 }

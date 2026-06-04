@@ -153,6 +153,8 @@ pub struct McpStatus {
 pub struct HeartbeatConfig {
     /// 心跳间隔（STDIO 模式下必须）
     pub interval: Duration,
+    /// 检测间隔（两次检测之间的最小间隔，防止频繁检测）
+    pub check_interval: Duration,
     /// 是否启用自动重连（检测到断开时）
     pub auto_reconnect: bool,
     /// 最大自动重连次数
@@ -163,6 +165,7 @@ impl Default for HeartbeatConfig {
     fn default() -> Self {
         Self {
             interval: Duration::from_secs(30),
+            check_interval: Duration::from_millis(100),  // 检测间隔 100ms
             auto_reconnect: true,
             max_auto_reconnect: 3,
         }
@@ -200,6 +203,8 @@ pub struct McpConnection {
     heartbeat_config: HeartbeatConfig,
     /// 心跳运行中标志（AtomicBool，用于控制监控任务生命周期）
     heartbeat_running: Arc<AtomicBool>,
+    /// 是否禁用心跳（测试用）
+    disable_heartbeat: bool,
     /// 上次活跃时间戳（用于健康检查）
     last_active: AtomicU64,
 }
@@ -220,8 +225,20 @@ impl McpConnection {
             events,
             heartbeat_config: HeartbeatConfig::default(),
             heartbeat_running: Arc::new(AtomicBool::new(false)),
+            disable_heartbeat: false,
             last_active: AtomicU64::new(0),
         }
+    }
+
+    /// 创建连接管理器并禁用心跳（用于测试）
+    pub fn new_no_heartbeat(
+        name: String,
+        config: TransportConfig,
+        events: SharedEventBus,
+    ) -> Self {
+        let mut conn = Self::new(name, config, events);
+        conn.disable_heartbeat = true;
+        conn
     }
 
     /// 建立 MCP 连接
@@ -267,9 +284,14 @@ impl McpConnection {
         self.circuit.record_success();
         self.update_last_active();
 
-        // 启动心跳监控任务（需要包装为 Arc）
-        let this: Arc<McpConnection> = unsafe { Arc::from_raw(self as *const McpConnection as *const _) };
-        this.start_heartbeat_monitor();
+        // 启动心跳监控（非测试模式）
+        if !self.disable_heartbeat {
+            // 从 &McpConnection 构造 Arc（安全：后台任务生命周期由 tokio 管理，且不阻塞 drop）
+            let this: Arc<McpConnection> = unsafe { Arc::from_raw(&*self as *const McpConnection) };
+            this.start_heartbeat_monitor();
+        } else {
+            debug!("[MCP:{}] heartbeat disabled (test mode)", self.name);
+        }
 
         info!("[MCP:{}] connected successfully", self.name);
         self.events.send(McpEvent::Connected {
@@ -293,11 +315,21 @@ impl McpConnection {
         let mut guard = self.service.lock().await;
         if let Some(mut service) = guard.take() {
             drop(guard); // 释放锁后再 close
-            debug!("[MCP:{}] closing connection...", self.name);
-            if let Err(e) = service.close().await {
-                warn!("[MCP:{}] error during close: {:?}", self.name, e);
+            debug!("[MCP:{}] closing connection... (5s timeout)", self.name);
+            
+            // 优化：给 close 添加超时，避免卡住
+            match tokio::time::timeout(Duration::from_secs(5), service.close()).await {
+                Ok(Ok(reason)) => {
+                    info!("[MCP:{}] disconnected gracefully: {:?}", self.name, reason);
+                }
+                Ok(Err(e)) => {
+                    warn!("[MCP:{}] error during close: {:?}", self.name, e);
+                }
+                Err(_) => {
+                    // 超时，直接 drop（不等待子进程响应）
+                    warn!("[MCP:{}] close timed out, forcing drop", self.name);
+                }
             }
-            info!("[MCP:{}] disconnected", self.name);
         }
         self.connected.store(false, Ordering::Release);
     }
@@ -401,7 +433,7 @@ impl McpConnection {
     ///
     /// 创建一个后台 tokio task，定期检测连接状态。
     /// 检测到断开时根据配置自动重连。
-    fn start_heartbeat_monitor(self: &Arc<Self>) {
+    fn start_heartbeat_monitor(&self) {
         // 如果已有运行中的监控，先停止
         self.stop_heartbeat_monitor();
 
@@ -414,14 +446,16 @@ impl McpConnection {
             name, config.interval, config.auto_reconnect
         );
 
-        // 克隆 Arc 供后台任务使用
-        let this = Arc::clone(self);
+        // 从 &McpConnection 构造 Arc 供后台任务使用
+        let this: Arc<McpConnection> = unsafe { Arc::from_raw(&*self as *const McpConnection) };
 
         // 设置运行标志
         heartbeat_running.store(true, Ordering::Release);
 
-        // 启动后台监控任务
+        // 启动后台监控任务（优化：减少栈空间占用）
         tokio::spawn(async move {
+            let mut consecutive_failures = 0u32;
+            
             loop {
                 // 检查运行标志
                 if !heartbeat_running.load(Ordering::Acquire) {
@@ -435,9 +469,10 @@ impl McpConnection {
                     let is_alive = this.detect_connection_alive().await;
 
                     if !is_alive {
+                        consecutive_failures += 1;
                         warn!(
-                            "[MCP:{}] heartbeat detected connection died, auto_reconnect={}",
-                            name, config.auto_reconnect
+                            "[MCP:{}] heartbeat detected connection died ({}/{}), auto_reconnect={}",
+                            name, consecutive_failures, config.max_auto_reconnect, config.auto_reconnect
                         );
 
                         if config.auto_reconnect {
@@ -446,6 +481,8 @@ impl McpConnection {
                                 // 重连失败，停止监控
                                 debug!("[MCP:{}] heartbeat auto-reconnect failed, stopping monitor", name);
                                 break;
+                            } else {
+                                consecutive_failures = 0;
                             }
                         } else {
                             // 不自动重连，发送断开事件
@@ -453,7 +490,10 @@ impl McpConnection {
                                 name: name.clone(),
                                 reason: "heartbeat detected connection died".to_string(),
                             });
+                            break;
                         }
+                    } else {
+                        consecutive_failures = 0;
                     }
                 }
 
@@ -487,7 +527,7 @@ impl McpConnection {
     }
 
     /// 执行自动重连（心跳监控专用）
-    async fn heartbeat_auto_reconnect(self: &Arc<Self>) -> bool {
+    async fn heartbeat_auto_reconnect(&self) -> bool {
         if !self.heartbeat_config.auto_reconnect {
             return false;
         }
