@@ -11,20 +11,20 @@ use crate::provider::llm::agent::runner::{AgentToolError, AgentToolExecutor};
 use crate::provider::llm::llm_event::{parse_tool_arguments, ToolExecError, ToolExecutor};
 use crate::provider::llm::parse_mcp_tool_name;
 use crate::provider::llm::types::FunctionCall;
-use crate::provider::mcp::McpManager;
+use crate::services::traits::McpClient;
 use rmcp::model::CallToolRequestParams;
 
 /// MCP 工具执行器
 ///
-/// 使用 McpManager 执行 MCP 协议工具调用。
+/// 使用 McpClient Trait 执行 MCP 协议工具调用。
 pub struct McpToolExecutor {
-    mcp_manager: Arc<McpManager>,
+    mcp_client: Arc<dyn McpClient>,
 }
 
 impl McpToolExecutor {
     /// 创建新的 MCP 工具执行器
-    pub fn new(mcp_manager: Arc<McpManager>) -> Self {
-        Self { mcp_manager }
+    pub fn new(mcp_client: Arc<dyn McpClient>) -> Self {
+        Self { mcp_client }
     }
 }
 
@@ -57,7 +57,7 @@ impl ToolExecutor for McpToolExecutor {
 
         // 执行工具调用
         let result = self
-            .mcp_manager
+            .mcp_client
             .call_tool(server_name, params)
             .await
             .map_err(|e| ToolExecError {
@@ -83,11 +83,11 @@ impl AgentToolExecutor for McpToolExecutor {
 
 /// 执行 MCP 工具调用（便捷函数）
 ///
-/// 解析工具名并调用 MCP Manager。
+/// 解析工具名并调用 MCP Client。
 pub async fn execute_mcp_tool(
-    mcp_manager: Arc<McpManager>,
+    mcp_client: Arc<dyn McpClient>,
     call: FunctionCall,
 ) -> Result<Value, ToolExecError> {
-    let executor = McpToolExecutor::new(mcp_manager);
+    let executor = McpToolExecutor::new(mcp_client);
     executor.execute(call).await
 }

@@ -58,6 +58,14 @@ pub fn run() {
             let mcp_manager = Arc::new(provider::mcp::McpManager::new());
             app.manage(mcp_manager.clone());
 
+            // 初始化并注册 McpService（方案 B：面向对象 + 依赖注入）
+            let db_accessor: Arc<dyn services::traits::DbAccessor> = Arc::new(db_state.clone());
+            let mcp_service = Arc::new(services::mcp_service::McpService::new(
+                db_accessor,
+                Arc::clone(&mcp_manager),
+            ));
+            app.manage(mcp_service.clone());
+
             let webhook_channel = app
                 .state::<Arc<provider::server::WebhookChannel>>()
                 .inner()
@@ -78,17 +86,10 @@ pub fn run() {
             });
 
             // 启动时重置 operating 为 idle（上次运行时的连接已失效），然后自动恢复所有已启用的 MCP 连接
-            let mcp_for_startup = Arc::clone(&mcp_manager);
+            let mcp_service_for_startup = mcp_service.clone();
             tauri::async_runtime::spawn(async move {
-                let db = match db_state.get().await {
-                    Ok(db) => db,
-                    Err(e) => {
-                        tracing::error!("[McpService] startup: failed to get DB: {}", e);
-                        return;
-                    }
-                };
-                services::mcp_service::reset_all_operating_on_startup(&db).await;
-                match services::mcp_service::resume_all_enabled(&db, &mcp_for_startup).await {
+                mcp_service_for_startup.reset_on_startup().await;
+                match mcp_service_for_startup.resume_all().await {
                     Ok(results) => {
                         for r in &results {
                             if r.success {
@@ -99,7 +100,7 @@ pub fn run() {
                         }
                     }
                     Err(e) => {
-                        tracing::error!("[McpService] startup: resume_all_enabled error: {}", e);
+                        tracing::error!("[McpService] startup: resume_all error: {}", e);
                     }
                 }
             });
@@ -133,10 +134,10 @@ pub fn run() {
             commands::mcp::mcp_connect,
             commands::mcp::mcp_disconnect,
             commands::mcp::mcp_resume_all,
-            // Chat commands
-            commands::chat::get_messages,
-            commands::chat::clear_messages,
-            commands::chat::get_sessions,
+            // Messages commands (v2 - 基于 messages + conversations 新表结构)
+            commands::messages::get_messages,
+            commands::messages::clear_messages,
+            commands::messages::get_sessions,
             // Chat model commands
             commands::chat_model::set_chat_model,
             commands::chat_model::get_chat_model,

@@ -10,6 +10,7 @@ use crate::provider::llm::{
     ChatMessage, ChatRequest, LlmChunkEnvelope, LlmProvider, LlmStreamSender,
 };
 use crate::provider::mcp::McpManager;
+use crate::services;
 use crate::services::llm_service;
 use crate::types::chat::ChatContext;
 
@@ -55,7 +56,7 @@ pub async fn llm_chat_once(
     account_id: String,
     mut req: ChatRequest,
 ) -> Result<String, String> {
-    let (provider_config, model_id) = llm_service::get_provider_config(
+    let (provider_config, model_id) = services::get_provider_config(
         cache.inner().clone(),
         &db_state,
         &account_id,

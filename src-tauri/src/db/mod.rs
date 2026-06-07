@@ -57,3 +57,17 @@ impl DbState {
         self
     }
 }
+
+// ──────────────────────────────────────────────────────────────
+// Trait 实现
+// ──────────────────────────────────────────────────────────────
+
+use crate::services::traits::DbAccessor;
+use async_trait::async_trait;
+
+#[async_trait]
+impl DbAccessor for DbState {
+    async fn get(&self) -> Result<Arc<DatabaseConnection>, DbError> {
+        DbState::get(self).await
+    }
+}

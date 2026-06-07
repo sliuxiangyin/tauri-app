@@ -74,6 +74,7 @@ impl MigrationTrait for Migration {
                     .table(ModelProviderConfig::Table)
                     .col(ModelProviderConfig::Enabled)
                     .col(ModelProviderConfig::SortIndex)
+                    .if_not_exists()
                     .to_owned(),
             )
             .await?;
@@ -135,6 +136,7 @@ impl MigrationTrait for Migration {
                     .table(ModelProviderModel::Table)
                     .col(ModelProviderModel::ConfigId)
                     .col(ModelProviderModel::SortIndex)
+                    .if_not_exists()
                     .to_owned(),
             )
             .await?;

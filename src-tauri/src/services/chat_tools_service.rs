@@ -2,18 +2,66 @@
 //!
 //! 职责：
 //! - 管理特定 accountId + sessionId 组合下可使用的 MCP 工具列表
-//! - 使用 cache 缓存机制存储和检索工具权限配置（不使用数据库）
+//! - 使用 cache 缓存机制存储和检索工具权限配置
+//! - 提供获取启用的 MCP 工具列表的能力
 //!
 //! 缓存键格式：`chat_tools:{account_id}:{session_id}`
 //! 缓存值格式：JSON 序列化的 ChatToolsConfig
 
 use std::sync::Arc;
 
-use crate::provider::cache::Cache;
 use crate::provider::llm::types::ToolDefinition;
-use crate::provider::mcp::McpManager;
+use crate::services::traits::McpClient;
+use crate::provider::cache::Cache;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
+
+// ──────────────────────────────────────────────────────────────
+// ChatToolsService（面向对象 + 依赖注入）
+// ──────────────────────────────────────────────────────────────
+
+/// Chat 工具服务
+///
+/// 通过构造器注入 Cache 依赖
+pub struct ChatToolsService {
+    cache: Arc<Cache>,
+}
+
+impl ChatToolsService {
+    /// 创建新的服务实例
+    pub fn new(cache: Arc<Cache>) -> Self {
+        Self { cache }
+    }
+
+    /// 获取指定 accountId + sessionId 的工具配置
+    pub fn get_config(&self, account_id: &str, session_id: &str) -> ChatToolsConfig {
+        load_config(&self.cache, account_id, session_id)
+    }
+
+    /// 保存工具配置
+    pub fn save_config(&self, account_id: &str, session_id: &str, config: &ChatToolsConfig) -> Result<(), String> {
+        save_config(&self.cache, account_id, session_id, config)
+    }
+
+    /// 删除工具配置
+    pub fn delete_config(&self, account_id: &str, session_id: &str) -> Result<(), String> {
+        delete_config(&self.cache, account_id, session_id)
+    }
+
+    /// 获取启用的 MCP 工具列表
+    pub async fn get_enabled_tools<C: McpClient + ?Sized>(
+        &self,
+        mcp_client: &C,
+        account_id: &str,
+        session_id: &str,
+    ) -> Vec<ToolDefinition> {
+        get_enabled_tools_impl(mcp_client, &self.cache, account_id, session_id).await
+    }
+}
+
+// ──────────────────────────────────────────────────────────────
+// ChatToolsConfig 数据结构
+// ──────────────────────────────────────────────────────────────
 
 /// 聊天工具权限配置
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -187,28 +235,18 @@ pub fn batch_get_tools_config(
 
 // ─── 工具过滤与转换 ─────────────────────────────────────────
 
-/// 获取指定会话的可用工具列表
-///
-/// 流程：
-/// 1. 从 McpManager 获取所有运行中的连接
-/// 2. 遍历每个连接，收集所有工具
-/// 3. 根据 ChatToolsConfig 过滤被禁用的 server/tool
-/// 4. 转换为统一的 ToolDefinition 格式
-pub async fn get_enabled_tools(
-    mcp_manager: &McpManager,
+/// 获取指定会话的可用工具列表（内部实现）
+async fn get_enabled_tools_impl<C: McpClient + ?Sized>(
+    mcp_client: &C,
     cache: &Cache,
     account_id: &str,
     session_id: &str,
 ) -> Vec<ToolDefinition> {
-    // 加载工具配置
     let config = load_config(cache, account_id, session_id);
     let mut tools = Vec::new();
 
-    // 获取所有运行中的连接
     let connections = {
-        // McpManager 的 connections 是 RwLock，通过 list_all_status 获取活跃的名称
-        // 然后逐个获取工具
-        let statuses = mcp_manager.list_all_status();
+        let statuses = mcp_client.list_all_status();
         statuses
             .into_iter()
             .filter(|s| s.health == "connected")
@@ -217,27 +255,21 @@ pub async fn get_enabled_tools(
     };
 
     for name in connections {
-        // 检查 server 是否被禁用
         if config.is_server_disabled(&name) {
             debug!("[get_enabled_tools] server '{}' is disabled", name);
             continue;
         }
 
-        // 获取该 server 的工具列表
-        match mcp_manager.get_tools(&name).await {
+        match mcp_client.get_tools(&name).await {
             Ok(mcp_tools) => {
                 for tool in mcp_tools {
                     let tool_name = tool.name.clone();
-                    // 检查单个工具是否被禁用
                     if config.is_tool_disabled(&name, &tool_name) {
                         debug!("[get_enabled_tools] tool '{}/{}' is disabled", name, tool_name);
                         continue;
                     }
 
-                    // MCP Tool 的 input_schema 是 Arc<serde_json::Map>
                     let input_schema = serde_json::Value::Object((*tool.input_schema).clone());
-                    // 转换为统一格式（MCP 标准格式: "mcp__server__tool"）
-                    // 例如: "mcp__browser__navigate", "mcp__playwright__click"
                     let mcp_tool_name = format!("mcp__{}__{}", name, tool_name);
                     tools.push(ToolDefinition::from_mcp(
                         &mcp_tool_name,
@@ -259,4 +291,26 @@ pub async fn get_enabled_tools(
         session_id
     );
     tools
+}
+
+/// 获取指定会话的可用工具列表（兼容版）
+///
+/// 保留旧函数签名用于向后兼容
+pub async fn get_enabled_tools_from_client<C: McpClient + ?Sized>(
+    mcp_client: &C,
+    cache: &Cache,
+    account_id: &str,
+    session_id: &str,
+) -> Vec<ToolDefinition> {
+    get_enabled_tools_impl(mcp_client, cache, account_id, session_id).await
+}
+
+/// 获取指定会话的可用工具列表（直接使用 McpManager）
+pub async fn get_enabled_tools(
+    mcp_manager: &crate::provider::mcp::McpManager,
+    cache: &Cache,
+    account_id: &str,
+    session_id: &str,
+) -> Vec<ToolDefinition> {
+    get_enabled_tools_impl(mcp_manager, cache, account_id, session_id).await
 }

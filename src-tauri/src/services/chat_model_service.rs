@@ -5,10 +5,10 @@
 //! - 使用 sled 缓存持久化模型选择配置
 //! - 提供获取当前账户模型的能力
 
-use crate::db::DbState;
 use crate::provider::cache::{Cache, CacheError};
 use crate::provider::llm::types::ProviderConfigPayload;
 use crate::services::db::chat_model as chat_model_db;
+use crate::services::traits::DbAccessor;
 use crate::types::chat_model::{AccountModelSelection, ModelGroup, ModelItem};
 use std::sync::Arc;
 
@@ -54,7 +54,7 @@ impl ChatModelService {
 /// 返回 (ProviderConfigPayload, model_id)
 pub async fn get_account_model_config(
     cache: Arc<Cache>,
-    db_state: &DbState,
+    db: &Arc<dyn DbAccessor>,
     account_id: &str,
 ) -> Result<(ProviderConfigPayload, String), String> {
     let service = ChatModelService::new(cache);
@@ -64,7 +64,8 @@ pub async fn get_account_model_config(
         Ok(Some(s)) => s,
         _ => {
             // 未选择，返回第一个开启的模型
-            let model_info = chat_model_db::get_first_enabled_model(db_state)
+            let db_conn = db.get().await.map_err(|e| e.to_string())?;
+            let model_info = chat_model_db::get_first_enabled_model(&*db_conn)
                 .await
                 .map_err(|e| e.to_string())?;
             let info = model_info.ok_or("no enabled model found")?;
@@ -73,7 +74,8 @@ pub async fn get_account_model_config(
     };
 
     // 获取对应的 ProviderConfigPayload
-    let model_info = chat_model_db::get_model_by_ids(db_state, &selection.config_id, &selection.model_id)
+    let db_conn = db.get().await.map_err(|e| e.to_string())?;
+    let model_info = chat_model_db::get_model_by_ids(&*db_conn, &selection.config_id, &selection.model_id)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -85,12 +87,9 @@ pub async fn get_account_model_config(
 
 /// 获取所有模型，按配置分组
 pub async fn get_all_models_grouped(
-    db_state: &crate::db::DbState,
+    db: &Arc<dyn DbAccessor>,
 ) -> std::result::Result<Vec<ModelGroup>, String> {
-    let db: Arc<sea_orm::prelude::DatabaseConnection> = db_state
-        .get()
-        .await
-        .map_err(|e| e.to_string())?;
+    let db_conn = db.get().await.map_err(|e| e.to_string())?;
 
     use crate::entity::model_provider_config as mpc;
     use crate::entity::model_provider_model as mpm;
@@ -100,7 +99,7 @@ pub async fn get_all_models_grouped(
     let configs = mpc::Entity::find()
         .order_by_asc(mpc::Column::SortIndex)
         .find_with_related(mpm::Entity)
-        .all(&*db)
+        .all(&*db_conn)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -127,4 +126,16 @@ pub async fn get_all_models_grouped(
         .collect();
 
     Ok(groups)
+}
+
+/// 获取账户的模型配置（兼容版）
+///
+/// 供 commands 层使用，返回 (ProviderConfigPayload, model_id)
+pub async fn get_provider_config(
+    cache: Arc<Cache>,
+    db: &crate::db::DbState,
+    account_id: &str,
+) -> Result<(ProviderConfigPayload, String), String> {
+    let db_accessor: Arc<dyn DbAccessor> = Arc::new(db.clone());
+    get_account_model_config(cache, &db_accessor, account_id).await
 }

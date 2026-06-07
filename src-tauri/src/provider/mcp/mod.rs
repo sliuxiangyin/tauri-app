@@ -298,3 +298,44 @@ impl From<&McpManager> for Arc<McpManager> {
         }
     }
 }
+
+// ──────────────────────────────────────────────────────────────
+// Trait 实现
+// ──────────────────────────────────────────────────────────────
+
+use crate::services::traits::McpClient;
+use async_trait::async_trait;
+
+#[async_trait]
+impl McpClient for McpManager {
+    async fn call_tool(
+        &self,
+        name: &str,
+        params: CallToolRequestParams,
+    ) -> McpResult<CallToolResult> {
+        McpManager::call_tool(self, name, params).await
+    }
+
+    async fn get_tools(&self, name: &str) -> McpResult<Vec<Tool>> {
+        McpManager::get_tools(self, name).await
+    }
+
+    fn get_status(&self, name: &str) -> Option<McpStatus> {
+        McpManager::get_status(self, name)
+    }
+
+    fn list_all_status(&self) -> Vec<McpStatus> {
+        McpManager::list_all_status(self)
+    }
+
+    fn get_tools_count(&self) -> usize {
+        McpManager::get_tools_count(self)
+    }
+}
+
+/// 转换为 Trait 对象（用于 Trait 注入）
+impl McpManager {
+    pub fn into_dyn(self: Arc<McpManager>) -> Arc<dyn McpClient> {
+        self as Arc<dyn McpClient>
+    }
+}

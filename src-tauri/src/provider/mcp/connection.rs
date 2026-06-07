@@ -241,6 +241,22 @@ impl McpConnection {
         conn
     }
 
+    /// 创建连接管理器（从 Arc 上下文，用于心跳任务获取自身引用）
+    fn from_arc(conn: Arc<McpConnection>) -> Self {
+        Self {
+            name: conn.name.clone(),
+            config: conn.config.clone(),
+            service: Mutex::new(None),
+            circuit: CircuitBreaker::new(CircuitBreakerConfig::default()),
+            connected: AtomicBool::new(false),
+            events: conn.events.clone(),
+            heartbeat_config: conn.heartbeat_config.clone(),
+            heartbeat_running: Arc::clone(&conn.heartbeat_running),
+            disable_heartbeat: false,
+            last_active: AtomicU64::new(0),
+        }
+    }
+
     /// 建立 MCP 连接
     ///
     /// 流程：
@@ -286,9 +302,22 @@ impl McpConnection {
 
         // 启动心跳监控（非测试模式）
         if !self.disable_heartbeat {
-            // 从 &McpConnection 构造 Arc（安全：后台任务生命周期由 tokio 管理，且不阻塞 drop）
-            let this: Arc<McpConnection> = unsafe { Arc::from_raw(&*self as *const McpConnection) };
-            this.start_heartbeat_monitor();
+            // 从 Arc<Self> 获取自身引用（安全：self 必然来自某个 Arc）
+            let this: Arc<McpConnection> = unsafe {
+                let ptr = std::ptr::from_ref(self);
+                Arc::increment_strong_count(ptr);
+                Arc::from_raw(ptr)
+            };
+            let name = self.name.clone();
+            let config = self.heartbeat_config.clone();
+            let heartbeat_running = Arc::clone(&self.heartbeat_running);
+
+            // 设置运行标志
+            heartbeat_running.store(true, Ordering::Release);
+
+            tokio::spawn(async move {
+                Self::run_heartbeat_loop(name, config, heartbeat_running, this).await;
+            });
         } else {
             debug!("[MCP:{}] heartbeat disabled (test mode)", self.name);
         }
@@ -429,82 +458,68 @@ impl McpConnection {
         self.last_active.load(Ordering::Acquire)
     }
 
-    /// 启动心跳监控任务
-    ///
-    /// 创建一个后台 tokio task，定期检测连接状态。
-    /// 检测到断开时根据配置自动重连。
-    fn start_heartbeat_monitor(&self) {
-        // 如果已有运行中的监控，先停止
-        self.stop_heartbeat_monitor();
-
-        let name = self.name.clone();
-        let config = self.heartbeat_config.clone();
-        let heartbeat_running = Arc::clone(&self.heartbeat_running);
+    /// 心跳监控主循环（独立函数，避免 Arc Self:: 方法调用歧义）
+    async fn run_heartbeat_loop(
+        name: String,
+        config: HeartbeatConfig,
+        heartbeat_running: Arc<AtomicBool>,
+        this: Arc<McpConnection>,
+    ) {
+        let mut consecutive_failures = 0u32;
 
         debug!(
             "[MCP:{}] starting heartbeat monitor (interval={:?}, auto_reconnect={})",
             name, config.interval, config.auto_reconnect
         );
 
-        // 从 &McpConnection 构造 Arc 供后台任务使用
-        let this: Arc<McpConnection> = unsafe { Arc::from_raw(&*self as *const McpConnection) };
-
-        // 设置运行标志
-        heartbeat_running.store(true, Ordering::Release);
-
-        // 启动后台监控任务（优化：减少栈空间占用）
-        tokio::spawn(async move {
-            let mut consecutive_failures = 0u32;
-            
-            loop {
-                // 检查运行标志
-                if !heartbeat_running.load(Ordering::Acquire) {
-                    debug!("[MCP:{}] heartbeat monitor stopped by flag", name);
-                    break;
-                }
-
-                // 定时心跳检测
-                if this.connected.load(Ordering::Acquire) {
-                    // 检测连接是否真的存活
-                    let is_alive = this.detect_connection_alive().await;
-
-                    if !is_alive {
-                        consecutive_failures += 1;
-                        warn!(
-                            "[MCP:{}] heartbeat detected connection died ({}/{}), auto_reconnect={}",
-                            name, consecutive_failures, config.max_auto_reconnect, config.auto_reconnect
-                        );
-
-                        if config.auto_reconnect {
-                            let success = this.heartbeat_auto_reconnect().await;
-                            if !success {
-                                // 重连失败，停止监控
-                                debug!("[MCP:{}] heartbeat auto-reconnect failed, stopping monitor", name);
-                                break;
-                            } else {
-                                consecutive_failures = 0;
-                            }
-                        } else {
-                            // 不自动重连，发送断开事件
-                            this.events.send(McpEvent::Disconnected {
-                                name: name.clone(),
-                                reason: "heartbeat detected connection died".to_string(),
-                            });
-                            break;
-                        }
-                    } else {
-                        consecutive_failures = 0;
-                    }
-                }
-
-                // 等待下一个心跳间隔
-                tokio::time::sleep(config.interval).await;
+        loop {
+            // 检查运行标志
+            if !heartbeat_running.load(Ordering::Acquire) {
+                debug!("[MCP:{}] heartbeat monitor stopped by flag", name);
+                break;
             }
 
-            // 清理运行标志
-            heartbeat_running.store(false, Ordering::Release);
-            debug!("[MCP:{}] heartbeat monitor exited", name);
-        });
+            // 定时心跳检测
+            if this.connected.load(Ordering::Acquire) {
+                // 检测连接是否真的存活
+                let is_alive = this.detect_connection_alive().await;
+
+                if !is_alive {
+                    consecutive_failures += 1;
+                    warn!(
+                        "[MCP:{}] heartbeat detected connection died ({}/{}), auto_reconnect={}",
+                        name, consecutive_failures, config.max_auto_reconnect, config.auto_reconnect
+                    );
+
+                    if config.auto_reconnect {
+                        let success = this.heartbeat_auto_reconnect().await;
+                        if !success {
+                            // 重连失败，停止监控
+                            debug!("[MCP:{}] heartbeat auto-reconnect failed, stopping monitor", name);
+                            break;
+                        } else {
+                            consecutive_failures = 0;
+                        }
+                    } else {
+                        // 不自动重连，发送断开事件
+                        this.events.send(McpEvent::Disconnected {
+                            name: name.clone(),
+                            reason: "heartbeat detected connection died".to_string(),
+                        });
+                        break;
+                    }
+                } else {
+                    consecutive_failures = 0;
+                }
+            }
+
+            // 等待下一个心跳间隔
+            tokio::time::sleep(config.interval).await;
+        }
+
+        // 清理运行标志
+        heartbeat_running.store(false, Ordering::Release);
+        debug!("[MCP:{}] heartbeat monitor exited", name);
     }
 
     /// 停止心跳监控任务（立即生效）

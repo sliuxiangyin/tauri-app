@@ -94,7 +94,6 @@ impl IntentAnalyzer {
         let model = self.get_model()?;
         
         let response = self.send_intent_request(model, messages, available_tools).await?;
-        println!("[IntentAnalyzer] response full: {}", response);
         
         parse_intent_response(&response)
     }

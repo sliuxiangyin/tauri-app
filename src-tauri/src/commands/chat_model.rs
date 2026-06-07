@@ -45,7 +45,8 @@ pub async fn set_chat_model(
         .map_err(|e| e.to_string())?;
 
     // 获取 ProviderConfigPayload
-    let model_info = chat_model_db::get_model_by_ids(&db_state, &config_id, &model_id)
+    let db = db_state.get().await.map_err(|e| e.to_string())?;
+    let model_info = chat_model_db::get_model_by_ids(&*db, &config_id, &model_id)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -76,8 +77,9 @@ pub async fn get_chat_model(
     match service.get_account_model(&account_id) {
         Ok(Some(selection)) => {
             // 获取对应的 ProviderConfigPayload
+            let db = db_state.get().await.map_err(|e| e.to_string())?;
             let model_info = chat_model_db::get_model_by_ids(
-                &db_state,
+                &*db,
                 &selection.config_id,
                 &selection.model_id,
             )
@@ -97,8 +99,9 @@ pub async fn get_chat_model(
         }
         _ => {
             // 未选择过，返回第一个开启的模型
+            let db = db_state.get().await.map_err(|e| e.to_string())?;
             let model_info =
-                chat_model_db::get_first_enabled_model(&db_state)
+                chat_model_db::get_first_enabled_model(&*db)
                     .await
                     .map_err(|e| e.to_string())?;
 
@@ -121,5 +124,6 @@ pub async fn get_chat_model(
 pub async fn get_all_chat_models(
     db_state: State<'_, DbState>,
 ) -> Result<Vec<ModelGroup>, String> {
-    chat_model_service::get_all_models_grouped(&db_state).await
+    let dbAccessor: Arc<dyn crate::services::traits::DbAccessor> = Arc::new(db_state.inner().clone());
+    chat_model_service::get_all_models_grouped(&dbAccessor).await
 }

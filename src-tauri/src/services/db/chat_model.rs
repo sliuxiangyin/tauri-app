@@ -2,11 +2,10 @@
 //!
 //! 提供模型配置的数据库查询接口，与业务逻辑解耦。
 
-use crate::db::DbState;
 use crate::entity::model_provider_config as mpc;
 use crate::entity::model_provider_model as mpm;
 use crate::provider::llm::types::ProviderConfigPayload;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder};
 use std::sync::Arc;
 
 /// 第一个可用模型信息
@@ -24,19 +23,14 @@ pub struct FirstEnabledModel {
 /// 1. 获取所有开启的模型提供配置（按 sort_index 排序）
 /// 2. 返回第一个配置下按 sort_index 排序的第一个模型
 pub async fn get_first_enabled_model(
-    db_state: &DbState,
+    db: &DatabaseConnection,
 ) -> Result<Option<FirstEnabledModel>, String> {
-    let db: Arc<sea_orm::prelude::DatabaseConnection> = db_state
-        .get()
-        .await
-        .map_err(|e| e.to_string())?;
-
     // 查询第一个开启的配置及其模型
     let configs = mpc::Entity::find()
         .filter(mpc::Column::Enabled.eq(1))
         .order_by_asc(mpc::Column::SortIndex)
         .find_with_related(mpm::Entity)
-        .all(&*db)
+        .all(db)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -86,18 +80,13 @@ pub async fn get_first_enabled_model(
 
 /// 根据 config_id 和 model_id 获取模型信息
 pub async fn get_model_by_ids(
-    db_state: &DbState,
+    db: &DatabaseConnection,
     config_id: &str,
     model_id: &str,
 ) -> Result<Option<FirstEnabledModel>, String> {
-    let db: Arc<sea_orm::prelude::DatabaseConnection> = db_state
-        .get()
-        .await
-        .map_err(|e| e.to_string())?;
-
     // 获取配置
     let config = mpc::Entity::find_by_id(config_id)
-        .one(&*db)
+        .one(db)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -109,7 +98,7 @@ pub async fn get_model_by_ids(
     // 获取该配置下的所有模型
     let models = mpm::Entity::find()
         .filter(mpm::Column::ConfigId.eq(config_id))
-        .all(&*db)
+        .all(db)
         .await
         .map_err(|e| e.to_string())?;
 

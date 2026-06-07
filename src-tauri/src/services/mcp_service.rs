@@ -17,7 +17,99 @@ use tracing::{error, info, warn};
 
 use crate::provider::mcp::{McpManager, TransportConfig};
 use crate::services::db::mcp::{self as db_mcp, CreateMcpPayload, UpdateMcpPayload};
+use crate::services::traits::DbAccessor;
 use crate::types::mcp::{McpServiceDto, ResumeResult};
+
+// ──────────────────────────────────────────────────────────────
+// McpService（面向对象 + 依赖注入）
+// ──────────────────────────────────────────────────────────────
+
+/// MCP 服务
+///
+/// 通过构造器注入 DbAccessor 和 McpManager 依赖
+pub struct McpService {
+    db: Arc<dyn DbAccessor>,
+    mcp: Arc<McpManager>,
+}
+
+impl McpService {
+    /// 创建新的 MCP 服务
+    pub fn new(db: Arc<dyn DbAccessor>, mcp: Arc<McpManager>) -> Self {
+        Self { db, mcp }
+    }
+
+    /// 获取运行中的 MCP 配置列表
+    pub async fn get_running(&self) -> Result<Vec<McpServiceDto>, String> {
+        let db = self.db.get().await.map_err(|e| e.to_string())?;
+        get_running_mcps_impl(&db, &self.mcp).await
+    }
+
+    /// 获取所有 MCP 配置（含运行时状态）
+    pub async fn get_all(&self) -> Result<Vec<McpServiceDto>, String> {
+        let db = self.db.get().await.map_err(|e| e.to_string())?;
+        get_all_mcps_impl(&db, &self.mcp).await
+    }
+
+    /// 获取单个 MCP 配置
+    pub async fn get(&self, name: &str) -> Result<Option<McpServiceDto>, String> {
+        let db = self.db.get().await.map_err(|e| e.to_string())?;
+        get_mcp_impl(&db, &self.mcp, name).await
+    }
+
+    /// 创建 MCP 配置
+    pub async fn create(&self, name: String, config: String, status: String) -> Result<McpServiceDto, String> {
+        let db = self.db.get().await.map_err(|e| e.to_string())?;
+        create_mcp_impl(db, Arc::clone(&self.mcp), name, config, status).await
+    }
+
+    /// 更新 MCP 配置
+    pub async fn update(&self, name: String, config: Option<String>, status: Option<String>) -> Result<McpServiceDto, String> {
+        let db = self.db.get().await.map_err(|e| e.to_string())?;
+        update_mcp_impl(db, Arc::clone(&self.mcp), name, config, status).await
+    }
+
+    /// 删除 MCP 配置
+    pub async fn delete(&self, name: String) -> Result<(), String> {
+        let db = self.db.get().await.map_err(|e| e.to_string())?;
+        delete_mcp_impl(&db, &self.mcp, name).await
+    }
+
+    /// 切换 MCP 状态
+    pub async fn toggle(&self, name: String) -> Result<McpServiceDto, String> {
+        let db = self.db.get().await.map_err(|e| e.to_string())?;
+        toggle_mcp_status_impl(db, Arc::clone(&self.mcp), name).await
+    }
+
+    /// 显式连接
+    pub async fn connect(&self, name: String) -> Result<McpServiceDto, String> {
+        let db = self.db.get().await.map_err(|e| e.to_string())?;
+        connect_mcp_impl(&db, &self.mcp, name).await
+    }
+
+    /// 显式断开
+    pub async fn disconnect(&self, name: String) -> Result<McpServiceDto, String> {
+        let db = self.db.get().await.map_err(|e| e.to_string())?;
+        disconnect_mcp_impl(&db, &self.mcp, name).await
+    }
+
+    /// 恢复所有已启用的服务
+    pub async fn resume_all(&self) -> Result<Vec<ResumeResult>, String> {
+        let db = self.db.get().await.map_err(|e| e.to_string())?;
+        resume_all_enabled_impl(&db, &self.mcp).await
+    }
+
+    /// 启动时重置所有 operating 状态
+    pub async fn reset_on_startup(&self) {
+        let db = self.db.get().await.map_err(|e| e.to_string());
+        if let Ok(db) = db {
+            reset_all_operating_on_startup(&db).await;
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────
+// 配置解析
+// ──────────────────────────────────────────────────────────────
 
 // ─── 配置解析 ─────────────────────────────────────────────
 
@@ -183,8 +275,8 @@ async fn set_operating_connecting(db: &DatabaseConnection, name: &str) {
 
 // ─── 公开 API ─────────────────────────────────────────────
 
-/// 获取运行中的 MCP 配置列表（status=enable 且 operating=running）
-pub async fn get_running_mcps(
+/// 获取运行中的 MCP 配置列表（内部实现）
+async fn get_running_mcps_impl(
     db: &DatabaseConnection,
     mcp: &McpManager,
 ) -> Result<Vec<McpServiceDto>, String> {
@@ -199,8 +291,8 @@ pub async fn get_running_mcps(
         .collect())
 }
 
-/// 获取所有 MCP 配置（合并运行时状态）
-pub async fn get_all_mcps(
+/// 获取所有 MCP 配置（内部实现）
+async fn get_all_mcps_impl(
     db: &DatabaseConnection,
     mcp: &McpManager,
 ) -> Result<Vec<McpServiceDto>, String> {
@@ -214,8 +306,8 @@ pub async fn get_all_mcps(
         .collect())
 }
 
-/// 获取单个 MCP 配置（合并运行时状态）
-pub async fn get_mcp(
+/// 获取单个 MCP 配置（内部实现）
+async fn get_mcp_impl(
     db: &DatabaseConnection,
     mcp: &McpManager,
     name: &str,
@@ -227,12 +319,8 @@ pub async fn get_mcp(
     }))
 }
 
-/// 创建 MCP 配置
-///
-/// 流程：写 DB → 若 status=enable 则异步连接 → 立即返回 optimistic 状态
-///
-/// 注意：连接在后台异步执行，operating 最终状态由后台任务写入 DB
-pub async fn create_mcp(
+/// 创建 MCP 配置（内部实现）
+async fn create_mcp_impl(
     db: Arc<DatabaseConnection>,
     mcp: Arc<McpManager>,
     name: String,
@@ -257,16 +345,14 @@ pub async fn create_mcp(
         spawn_connect_task(Arc::clone(&db), Arc::clone(&mcp), dto.name.clone(), transport);
     }
 
-    // 3. 返回 optimistic 状态（前端需轮询获取最终状态）
-    get_mcp(&db, &mcp, &dto.name)
+    // 3. 返回 optimistic 状态
+    get_mcp_impl(&db, &mcp, &dto.name)
         .await
         .map(|opt| opt.expect("just created MCP must exist"))
 }
 
-/// 更新 MCP 配置
-///
-/// 流程：读旧配置 → 写 DB → 若 config/status 变则异步连接/重启 → 立即返回 optimistic 状态
-pub async fn update_mcp(
+/// 更新 MCP 配置（内部实现）
+async fn update_mcp_impl(
     db: Arc<DatabaseConnection>,
     mcp: Arc<McpManager>,
     name: String,
@@ -320,15 +406,13 @@ pub async fn update_mcp(
     }
 
     // 4. 返回 optimistic 状态
-    get_mcp(&db, &mcp, &name)
+    get_mcp_impl(&db, &mcp, &name)
         .await
         .map(|opt| opt.expect("just updated MCP must exist"))
 }
 
-/// 删除 MCP 配置
-///
-/// 流程：断开运行时连接 → 删除 DB
-pub async fn delete_mcp(
+/// 删除 MCP 配置（内部实现）
+async fn delete_mcp_impl(
     db: &DatabaseConnection,
     mcp: &McpManager,
     name: String,
@@ -343,10 +427,8 @@ pub async fn delete_mcp(
     Ok(())
 }
 
-/// 切换 MCP 状态
-///
-/// 流程：toggle DB status → enable则异步连接 / disable则断开 → 立即返回 optimistic 状态
-pub async fn toggle_mcp_status(
+/// 切换 MCP 状态（内部实现）
+async fn toggle_mcp_status_impl(
     db: Arc<DatabaseConnection>,
     mcp: Arc<McpManager>,
     name: String,
@@ -380,15 +462,13 @@ pub async fn toggle_mcp_status(
     }
 
     // 4. 返回 optimistic 状态
-    get_mcp(&db, &mcp, &name)
+    get_mcp_impl(&db, &mcp, &name)
         .await
         .map(|opt| opt.expect("just toggled MCP must exist"))
 }
 
-/// 显式连接一个已配置的 MCP 服务（不改变 status）
-///
-/// 流程：读配置 → 标 connecting → McpManager.connect → 写回结果
-pub async fn connect_mcp(
+/// 显式连接（内部实现）
+async fn connect_mcp_impl(
     db: &DatabaseConnection,
     mcp: &McpManager,
     name: String,
@@ -406,15 +486,13 @@ pub async fn connect_mcp(
         Err(e) => after_connect_failure(db, &name, &e.to_string()).await,
     }
 
-    get_mcp(db, mcp, &name)
+    get_mcp_impl(db, mcp, &name)
         .await
         .map(|opt| opt.expect("just connected MCP must exist"))
 }
 
-/// 显式断开一个已配置的 MCP 服务（不改变 status，不删 DB）
-///
-/// 流程：McpManager.disconnect → DB: operating=idle
-pub async fn disconnect_mcp(
+/// 显式断开（内部实现）
+async fn disconnect_mcp_impl(
     db: &DatabaseConnection,
     mcp: &McpManager,
     name: String,
@@ -428,15 +506,13 @@ pub async fn disconnect_mcp(
     let _ = mcp.disconnect(&name).await;
     after_disconnect(db, &name).await;
 
-    get_mcp(db, mcp, &name)
+    get_mcp_impl(db, mcp, &name)
         .await
         .map(|opt| opt.expect("just disconnected MCP must exist"))
 }
 
-/// 一键恢复：连接所有 status=enable 且 operating≠running 的服务
-///
-/// 启动后由前端调用。串行连接，每完成一个即写 DB，返回每条结果。
-pub async fn resume_all_enabled(
+/// 恢复所有已启用服务（内部实现）
+async fn resume_all_enabled_impl(
     db: &DatabaseConnection,
     mcp: &McpManager,
 ) -> Result<Vec<ResumeResult>, String> {
