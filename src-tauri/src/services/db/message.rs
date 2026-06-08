@@ -78,6 +78,7 @@ pub struct PlanDto {
     pub id: String,
     pub mid: String,
     pub need_agent: String,
+    pub order_num: i32,
     pub reasoning: Option<String>,
     pub steps: Option<String>,
     pub step_results: Option<String>,
@@ -92,12 +93,37 @@ impl From<PlanModel> for PlanDto {
             id: model.id,
             mid: model.mid,
             need_agent: model.need_agent,
+            order_num: model.order_num,
             reasoning: model.reasoning,
             steps: model.steps,
             step_results: model.step_results,
             stop_reason: model.stop_reason,
             completed_at: model.completed_at.map(|t| t.to_string()),
             created_at: model.created_at.to_string(),
+        }
+    }
+}
+
+/// 统一内容项（用于按 order_num 排序 blocks 和 plan）
+///
+/// 序列化格式（邻接标签）：
+/// `{ "type": "block", "data": { ...ContentBlockDto } }`
+/// `{ "type": "plan",  "data": { ...PlanDto } }`
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "type", content = "data")]
+pub enum ContentItem {
+    #[serde(rename = "block")]
+    Block(ContentBlockDto),
+    #[serde(rename = "plan")]
+    Plan(PlanDto),
+}
+
+impl ContentItem {
+    /// 获取排序用的 order_num
+    fn order_num(&self) -> i32 {
+        match self {
+            ContentItem::Block(b) => b.order_num,
+            ContentItem::Plan(p) => p.order_num,
         }
     }
 }
@@ -115,10 +141,8 @@ pub struct MessageDto {
     pub token_usage: Option<String>,
     pub created_at: String,
     pub is_deleted: String,
-    /// 内容块（按 order_num 排序）
-    pub blocks: Vec<ContentBlockDto>,
-    /// Plan（可选，1:1）
-    pub plan: Option<PlanDto>,
+    /// 按 order_num 排序的统一内容序列（blocks + plan 合并）
+    pub content: Vec<ContentItem>,
 }
 
 /// 会话 DTO
@@ -196,6 +220,7 @@ pub async fn get_messages(
     let result: Vec<MessageDto> = messages
         .into_iter()
         .map(|msg| {
+            // 收集该消息的内容块
             let blocks: Vec<ContentBlockDto> = all_blocks
                 .iter()
                 .filter(|b| b.mid == msg.id)
@@ -203,11 +228,29 @@ pub async fn get_messages(
                 .map(ContentBlockDto::from)
                 .collect();
 
-            let plan: Option<PlanDto> = all_plans
+            // 收集该消息的 plan（最多 1 个）
+            let plan_dto: Option<PlanDto> = all_plans
                 .iter()
                 .find(|p| p.mid == msg.id)
                 .cloned()
                 .map(PlanDto::from);
+
+            // 合并为统一有序序列
+            let mut content: Vec<ContentItem> = Vec::with_capacity(blocks.len() + 1);
+            for b in blocks {
+                content.push(ContentItem::Block(b));
+            }
+            if let Some(p) = plan_dto {
+                content.push(ContentItem::Plan(p));
+            }
+            // 按 order_num 稳定排序（同 order_num 时 plan 优先于 block）
+            content.sort_by(|a, b| {
+                a.order_num().cmp(&b.order_num()).then_with(|| match (a, b) {
+                    (ContentItem::Plan(_), ContentItem::Block(_)) => std::cmp::Ordering::Less,
+                    (ContentItem::Block(_), ContentItem::Plan(_)) => std::cmp::Ordering::Greater,
+                    _ => std::cmp::Ordering::Equal,
+                })
+            });
 
             MessageDto {
                 id: msg.id,
@@ -220,8 +263,7 @@ pub async fn get_messages(
                 token_usage: msg.token_usage,
                 created_at: msg.created_at.to_string(),
                 is_deleted: msg.is_deleted,
-                blocks,
-                plan,
+                content,
             }
         })
         .collect();

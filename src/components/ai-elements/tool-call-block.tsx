@@ -1,0 +1,169 @@
+"use client";
+
+import { cn } from "@/lib/utils";
+import type { ContentBlockDto } from "@/lib/api/messages";
+import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
+import { useState } from "react";
+
+interface ToolCallBlockProps {
+  block: ContentBlockDto;
+  className?: string;
+}
+
+/** 工具调用块 */
+export function ToolCallBlock({ block, className }: ToolCallBlockProps) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  // 解析参数
+  let parsedArgs: Record<string, unknown> = {};
+  if (block.tool_arguments) {
+    try {
+      parsedArgs = JSON.parse(block.tool_arguments);
+    } catch {
+      parsedArgs = { raw: block.tool_arguments };
+    }
+  }
+
+  return (
+    <div className={cn("rounded-lg border border-orange-500/30 bg-orange-500/5 p-3 text-sm", className)}>
+      <button
+        type="button"
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="flex w-full items-center gap-2 text-left"
+      >
+        <span className="text-orange-500">
+          {isExpanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+        </span>
+        <span className="text-xs font-medium text-orange-500">🔧 工具调用</span>
+        <span className="font-medium">{block.tool_name}</span>
+      </button>
+
+      {isExpanded && block.tool_arguments && (
+        <div className="mt-2 rounded bg-muted p-2">
+          <p className="mb-1 text-xs text-muted-foreground">参数:</p>
+          <pre className="overflow-x-auto text-xs">
+            {JSON.stringify(parsedArgs, null, 2)}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface ToolResultBlockProps {
+  block: ContentBlockDto;
+  className?: string;
+}
+
+/** 工具结果块 */
+export function ToolResultBlock({ block, className }: ToolResultBlockProps) {
+  const [isExpanded, setIsExpanded] = useState(true);
+  const isSuccess = block.tool_status === "success";
+
+  // 解析输出
+  let parsedOutput: unknown = null;
+  if (block.tool_output) {
+    try {
+      parsedOutput = JSON.parse(block.tool_output);
+    } catch {
+      parsedOutput = block.tool_output;
+    }
+  }
+
+  return (
+    <div
+      className={cn(
+        "rounded-lg border p-3 text-sm",
+        isSuccess
+          ? "border-green-500/30 bg-green-500/5"
+          : "border-red-500/30 bg-red-500/5",
+        className
+      )}
+    >
+      <button
+        type="button"
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="flex w-full items-center gap-2 text-left"
+      >
+        <span className={isSuccess ? "text-green-500" : "text-red-500"}>
+          {isExpanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+        </span>
+        <span className={cn("text-xs font-medium", isSuccess ? "text-green-500" : "text-red-500")}>
+          {isSuccess ? "✅ 成功" : "❌ 失败"}
+        </span>
+        {block.tool_name && <span className="font-medium">{block.tool_name}</span>}
+      </button>
+
+      {isExpanded && (
+        <div className="mt-2">
+          {block.tool_error ? (
+            <p className="rounded bg-red-500/10 p-2 text-xs text-red-500">
+              {block.tool_error}
+            </p>
+          ) : block.tool_output ? (
+            <div className="rounded bg-muted p-2">
+              <p className="mb-1 text-xs text-muted-foreground">结果:</p>
+              <pre className="max-h-48 overflow-auto text-xs">
+                {typeof parsedOutput === "string"
+                  ? parsedOutput
+                  : JSON.stringify(parsedOutput, null, 2)}
+              </pre>
+            </div>
+          ) : isSuccess ? (
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Loader2 className="size-3 animate-spin" />
+              等待结果...
+            </div>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface ThinkingBlockProps {
+  block: ContentBlockDto;
+  className?: string;
+}
+
+/** 思考过程块 */
+export function ThinkingBlock({ block, className }: ThinkingBlockProps) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const content = block.thinking || block.content || "";
+
+  // 如果内容较短，直接显示
+  if (content.length < 200) {
+    return (
+      <div className={cn("rounded-lg bg-blue-500/5 p-3 text-sm", className)}>
+        <p className="mb-1 text-xs font-medium text-blue-500">💭 思考过程</p>
+        <p className="whitespace-pre-wrap text-pretty text-muted-foreground">
+          {content}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className={cn("rounded-lg bg-blue-500/5 p-3 text-sm", className)}>
+      <button
+        type="button"
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="flex w-full items-center gap-2 text-left"
+      >
+        <span className="text-blue-500">
+          {isExpanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+        </span>
+        <span className="text-xs font-medium text-blue-500">💭 思考过程</span>
+        <span className="text-xs text-muted-foreground">
+          ({content.length} 字符)
+        </span>
+      </button>
+
+      {isExpanded && (
+        <p className="mt-2 whitespace-pre-wrap text-pretty text-muted-foreground">
+          {content}
+        </p>
+      )}
+    </div>
+  );
+}

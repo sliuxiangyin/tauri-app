@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::provider::llm::agent::runner::parse_mcp_tool_name;
+use crate::provider::llm::block_sender::BlockSender;
 use crate::provider::llm::error::LlmError;
 use crate::provider::llm::types::FunctionCall;
 
@@ -122,52 +122,25 @@ pub enum LlmStreamEvent {
     /// 流式响应完成标记，表示 LLM 已完成所有输出
     Done,
 
-    // ========== 工具执行相关（LLM 层注入 Executor 后触发） ==========
-    /// 工具调用已解析并准备好执行
+    // ========== Block 边界标记 ==========
+    /// Block 开始标记，标识一个新的内容块
     ///
-    /// 由 LLM Provider 发送，在 ToolCallDone 时解析工具名后触发。
-    /// 通知外部可以执行工具了。
-    ToolCallReady {
-        /// 工具调用索引
-        index: u32,
-        /// 工具调用唯一 ID
-        call_id: String,
-        /// MCP server name（解析后，非 MCP 工具为空）
-        server_name: String,
-        /// 工具名称（不含前缀）
-        tool_name: String,
-        /// 完整工具名（如 "mcp__browser__navigate"）
-        full_name: String,
-        /// 完整的函数参数
-        arguments: Value,
+    /// 用于前端区分不同 block 的边界，便于渲染和交互。
+    /// 当 LLM 开始输出新的内容块（文本/思考/工具调用）时发送。
+    BlockStart {
+        /// Block 类型：text, thinking, tool_call, tool_result
+        block_type: String,
+        /// 块序号（自动递增）
+        order_num: i32,
     },
-    /// 工具执行结果（由 LLM 层执行工具后产生）
-    ///
-    /// 包含执行耗时，用于前端展示和日志统计。
-    ToolCallExecuted {
-        /// 工具调用 ID，与 ToolCallReady 中的 call_id 对应
-        call_id: String,
-        /// 完整工具名称
-        name: String,
-        /// 执行结果内容（成功时为结果，失败时为错误信息）
-        result: Value,
-        /// 是否执行成功
-        success: bool,
-        /// 工具执行耗时（ms）
-        duration_ms: u64,
-    },
-    /// 工具调用批次结束
-    ///
-    /// 在所有工具执行完成后发送，用于通知外部是否有工具调用以及执行统计。
-    ToolCallBatchEnd {
-        /// 是否有工具调用
-        had_tool_call: bool,
-        /// 总调用数
-        total_calls: u32,
-        /// 成功调用数
-        successful_calls: u32,
-        /// 失败调用数
-        failed_calls: u32,
+
+    // ========== Agent Plan 相关 ==========
+    /// Plan 步骤列表（Agent 模式进入时推送，供前端渲染步骤卡片）
+    PlanSteps {
+        /// LLM 判断理由
+        reasoning: String,
+        /// 执行步骤列表
+        steps: Vec<crate::provider::llm::types::PlanStep>,
     },
 }
 
@@ -192,6 +165,24 @@ impl LlmChunkEnvelope {
 }
 
 // =============================================================================
+// 工具调用记录和返回结果
+// =============================================================================
+
+pub use crate::provider::llm::types::ToolCallRecord;
+
+/// 流式处理最终结果
+///
+/// 包含 LLM 回复文本和完整的工具调用记录（含执行结果）。
+/// 供调用方统一入库使用。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessResult {
+    /// 最终文本回复
+    pub text: String,
+    /// 工具调用记录列表（包含调用信息 + 执行结果）
+    pub tool_calls: Vec<ToolCallRecord>,
+}
+
+// =============================================================================
 // ToolExecutor trait - 统一工具执行接口
 // =============================================================================
 
@@ -201,7 +192,6 @@ pub struct ToolExecError {
     pub name: String,
     pub message: String,
 }
-
 
 impl std::fmt::Display for ToolExecError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -257,7 +247,6 @@ pub struct ToolExecContext {
     start_time: Instant,
 }
 
-
 impl ToolExecContext {
     /// 创建新的执行上下文
     pub fn new() -> Self {
@@ -269,7 +258,6 @@ impl ToolExecContext {
             start_time: Instant::now(),
         }
     }
-
 
     /// 记录一次工具调用
     pub fn record_call(&mut self, success: bool) {
@@ -296,20 +284,28 @@ impl Default for ToolExecContext {
 
 /// 流式处理工具调用批次
 ///
-/// 在 LLM 流中累积工具调用，完成后执行并发送事件。
+/// 在 LLM 流中累积工具调用，完成后执行并返回完整结果。
+///
+/// # 参数
+/// - `stream`: LLM 流
+/// - `executor`: 工具执行器（可选）
+/// - `sender`: 流式事件发送通道（可选，用于发送给前端）
+///
+/// # 返回
+/// 返回 `ProcessResult`，包含最终文本、工具调用记录（含执行结果）和执行统计。
 pub async fn process_tool_batch(
     stream: LlmStream,
     executor: Option<Arc<dyn ToolExecutor>>,
     sender: Option<&tokio::sync::mpsc::UnboundedSender<LlmStreamEvent>>,
-) -> Result<(Vec<String>, ToolExecContext), LlmError> {
-
-
-    let mut tool_calls: Vec<FunctionCall> = Vec::new();
+) -> Result<ProcessResult, LlmError> {
+    let mut pending_calls: Vec<ToolCallRecord> = Vec::new();
     let mut current_call: Option<PendingToolCall> = None;
     let mut exec_ctx = ToolExecContext::new();
     let mut final_reply = String::new();
 
     futures_util::pin_mut!(stream);
+    let mut block_sender = BlockSender::new(sender.cloned());
+    block_sender.send("text");
 
     while let Some(item) = stream.next().await {
         match item {
@@ -323,18 +319,19 @@ pub async fn process_tool_batch(
                         }
                     }
                     LlmStreamEvent::ToolCallStart { index, id, name } => {
+                        block_sender.send("tool_call");
                         // 转发 ToolCallStart 给前端
                         if let Some(ref s) = sender {
-                            let _ = s.send(LlmStreamEvent::ToolCallStart { 
-                                index, 
-                                id: id.clone(), 
-                                name: name.clone() 
+                            let _ = s.send(LlmStreamEvent::ToolCallStart {
+                                index,
+                                id: id.clone(),
+                                name: name.clone(),
                             });
                         }
                         // 先保存上一个工具调用
                         if let Some(tc) = current_call.take() {
-                            if let Some(call) = tc.finalize() {
-                                tool_calls.push(call);
+                            if let Some(record) = tc.finalize() {
+                                pending_calls.push(record);
                             }
                         }
                         // 开始新的工具调用
@@ -360,7 +357,10 @@ pub async fn process_tool_batch(
                         }
                         // 转发 ToolCallDone 给前端
                         if let Some(ref s) = sender {
-                            let _ = s.send(LlmStreamEvent::ToolCallDone { index, arguments: arguments.clone() });
+                            let _ = s.send(LlmStreamEvent::ToolCallDone {
+                                index,
+                                arguments: arguments.clone(),
+                            });
                         }
                     }
                     LlmStreamEvent::Done => break,
@@ -378,74 +378,69 @@ pub async fn process_tool_batch(
 
     // 处理最后一个工具调用
     if let Some(tc) = current_call.take() {
-        if let Some(call) = tc.finalize() {
-            tool_calls.push(call);
+        if let Some(record) = tc.finalize() {
+            pending_calls.push(record);
         }
     }
-
-    // 执行工具调用
+    tracing::info!("[LLM] Tool pending_calls: {:?}", pending_calls);
+    // 执行工具调用并填充结果
+    let mut tool_calls: Vec<ToolCallRecord> = Vec::new();
+    block_sender.send("tool_result");
     if let Some(ref exec) = executor {
-        for call in &tool_calls {
-            let start = Instant::now();
-
-
-            // 发送 ToolCallReady 事件
-            if let Some(ref s) = sender {
-                let (server, tool) = parse_mcp_tool_name(&call.name)
-                    .unwrap_or(("", &call.name[..]));
-                let _ = s.send(LlmStreamEvent::ToolCallReady {
-                    index: 0,
-                    call_id: call.id.clone(),
-                    server_name: server.to_string(),
-                    tool_name: tool.to_string(),
-                    full_name: call.name.clone(),
-                    arguments: call.arguments.clone(),
-                });
-            }
-
+        for mut call in pending_calls {
             // 执行工具
-            match exec.execute(call.clone()).await {
+            match exec.execute(call.clone().into()).await {
                 Ok(result) => {
                     exec_ctx.record_call(true);
+                    call.success = true;
+                    call.result = Some(result.clone());
                     if let Some(ref s) = sender {
-                        let _ = s.send(LlmStreamEvent::ToolCallExecuted {
-                            call_id: call.id.clone(),
+                        let _ = s.send(LlmStreamEvent::ToolResult {
+                            call_id: call.call_id.clone(),
                             name: call.name.clone(),
                             result,
                             success: true,
-                            duration_ms: start.elapsed().as_millis() as u64,
                         });
                     }
                 }
                 Err(e) => {
                     exec_ctx.record_call(false);
+                    let error_result = Value::String(e.to_string());
+                    call.success = false;
+                    call.result = Some(error_result.clone());
                     if let Some(ref s) = sender {
-                        let _ = s.send(LlmStreamEvent::ToolCallExecuted {
-                            call_id: call.id.clone(),
+                        let _ = s.send(LlmStreamEvent::ToolResult {
+                            call_id: call.call_id.clone(),
                             name: call.name.clone(),
-                            result: Value::String(e.to_string()),
+                            result: error_result,
                             success: false,
-                            duration_ms: start.elapsed().as_millis() as u64,
                         });
                     }
                 }
             }
+            tool_calls.push(call);
         }
-
-        // 发送批次结束事件
-        if exec_ctx.had_tool_call {
+    } else {
+        // 没有 executor 时，为每个待执行的工具调用发送失败结果
+        for call in pending_calls {
+            let error_result = Value::String("No executor available".to_string());
             if let Some(ref s) = sender {
-                let _ = s.send(LlmStreamEvent::ToolCallBatchEnd {
-                    had_tool_call: true,
-                    total_calls: exec_ctx.total_calls,
-                    successful_calls: exec_ctx.successful_calls,
-                    failed_calls: exec_ctx.failed_calls,
+                let _ = s.send(LlmStreamEvent::ToolResult {
+                    call_id: call.call_id.clone(),
+                    name: call.name.clone(),
+                    result: error_result,
+                    success: false,
                 });
             }
+            tool_calls.push(call);
         }
     }
+    tracing::info!("[LLM] Tool calls: {:?}", tool_calls);
 
-    Ok((vec![final_reply], exec_ctx))
+    Ok(ProcessResult {
+        text: final_reply,
+        tool_calls,
+    })
 }
 
 /// 待处理的工具调用（用于累积参数）
@@ -458,20 +453,20 @@ struct PendingToolCall {
 
 impl PendingToolCall {
     /// 完成工具调用，解析参数
-    fn finalize(self) -> Option<FunctionCall> {
+    fn finalize(self) -> Option<ToolCallRecord> {
         let arguments = if self.arguments.is_empty() {
             Value::Object(serde_json::Map::new())
         } else {
-            serde_json::from_str(&self.arguments).unwrap_or_else(|_| {
-                Value::Object(serde_json::Map::new())
-            })
+            serde_json::from_str(&self.arguments)
+                .unwrap_or_else(|_| Value::Object(serde_json::Map::new()))
         };
 
-
-        Some(FunctionCall {
-            id: self.id,
+        Some(ToolCallRecord {
+            call_id: self.id,
             name: self.name,
             arguments,
+            result: None,
+            success: false,
         })
     }
 }

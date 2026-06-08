@@ -35,7 +35,7 @@ pub struct PlanResult {
 }
 
 /// 单个步骤执行结果
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StepResult {
     /// 步骤序号
     pub order: u8,

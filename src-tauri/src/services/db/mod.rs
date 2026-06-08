@@ -9,3 +9,4 @@
 pub mod chat_model;
 pub mod mcp;
 pub mod message;
+pub mod plans;

@@ -41,6 +41,45 @@ pub struct FunctionCall {
     pub arguments: serde_json::Value,
 }
 
+/// 工具调用记录（包含调用信息 + 执行结果）
+///
+/// 用于 process_tool_batch 返回完整工具调用数据，供调用方入库。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallRecord {
+    /// 工具调用 ID
+    pub call_id: String,
+    /// 工具名称
+    pub name: String,
+    /// 工具参数
+    pub arguments: serde_json::Value,
+    /// 工具执行结果
+    pub result: Option<serde_json::Value>,
+    /// 是否执行成功
+    pub success: bool,
+}
+
+impl From<FunctionCall> for ToolCallRecord {
+    fn from(call: FunctionCall) -> Self {
+        Self {
+            call_id: call.id,
+            name: call.name,
+            arguments: call.arguments,
+            result: None,
+            success: false,
+        }
+    }
+}
+
+impl From<ToolCallRecord> for FunctionCall {
+    fn from(record: ToolCallRecord) -> Self {
+        Self {
+            id: record.call_id,
+            name: record.name,
+            arguments: record.arguments,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -246,3 +285,68 @@ pub enum ProviderConfigPayload {
 
 // 注意：StepType、StepAction、LlmDecision 已移动到 provider::llm::agent::types
 // PlanStep 和 IntentPlan 保留在此文件，因为它们被多个模块引用
+
+// ──────────────────────────────────────────────────────────────
+// Block 类型定义
+// ──────────────────────────────────────────────────────────────
+
+/// 内容块类型枚举
+///
+/// 用于区分 conversation 表中不同类型的 block：
+/// - Text: 普通文本内容
+/// - Thinking: 思考过程/推理链
+/// - ToolCall: 工具调用
+/// - ToolResult: 工具执行结果
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockType {
+    /// 普通文本内容
+    Text,
+    /// 思考过程/推理链
+    Thinking,
+    /// 工具调用
+    ToolCall,
+    /// 工具执行结果
+    ToolResult,
+}
+
+impl BlockType {
+    /// 转换为字符串
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BlockType::Text => "text",
+            BlockType::Thinking => "thinking",
+            BlockType::ToolCall => "tool_call",
+            BlockType::ToolResult => "tool_result",
+        }
+    }
+
+    /// 从字符串转换
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "text" => BlockType::Text,
+            "thinking" => BlockType::Thinking,
+            "tool_call" => BlockType::ToolCall,
+            "tool_result" => BlockType::ToolResult,
+            _ => BlockType::Text,
+        }
+    }
+}
+
+impl serde::Serialize for BlockType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for BlockType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(BlockType::from_str(&s))
+    }
+}

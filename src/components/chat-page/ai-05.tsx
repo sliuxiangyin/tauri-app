@@ -10,23 +10,31 @@ import {
 import {
   Message,
   MessageContent,
-  MessageResponse,
 } from "@/components/ai-elements/message";
+import { PlanStepsList } from "@/components/ai-elements/plan-steps-list";
+import {
+  ToolCallBlock,
+  ToolResultBlock,
+  ThinkingBlock,
+} from "@/components/ai-elements/tool-call-block";
 import { ChatBox } from "@/components/chat-page/chat-box";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
   isTauriRuntime,
   streamLlmChat,
-  type LlmChunkPayload,
 } from "@/lib/api/tauri-llm";
 import {
   IconAdjustmentsHorizontal,
   IconTrash,
 } from "@tabler/icons-react";
-import { type ChatMessage } from "@/stores/useChatStore";
+import { type MessageDto } from "@/stores/useChatStore";
 import { type AccountInfo } from "@/lib/api/wechat";
-import { clearMessages } from "@/lib/api/chat";
+import {
+  clearMessages,
+  type ContentBlockDto,
+  type ContentItem,
+} from "@/lib/api/messages";
 import {
   getChatModel,
   getAllChatModels,
@@ -46,83 +54,67 @@ import {
   CommandList,
 } from "@/components/ui/command";
 
-// 渲染 LLM chunk 事件的辅助函数
-function renderChunkEvent(payload: LlmChunkPayload): React.ReactNode {
-  switch (payload.kind) {
-    case "reasoning_delta":
-      return <span className="text-blue-400">[思考] {payload.text}</span>;
-
-    case "tool_call_start":
-      return <span className="text-orange-400">[工具开始] {payload.name}</span>;
-
-    case "tool_call_delta":
-      return <span className="text-yellow-400">[工具参数] {payload.arguments}</span>;
-
-    case "tool_call_done":
-      return (
-        <span className="text-orange-400">
-          [工具完成] 参数: {JSON.stringify(payload.arguments)}
-        </span>
-      );
-
-    case "tool_result":
-      return (
-        <span className={payload.success ? "text-green-400" : "text-red-400"}>
-          [工具结果-{payload.success ? "成功" : "失败"}] {payload.name}: {JSON.stringify(payload.result)}
-        </span>
-      );
-
-    case "reference":
-      return (
-        <span className="text-purple-400">
-          [引用] {payload.title} - {payload.url}
-        </span>
-      );
-
-    case "audio_delta":
-      return <span className="text-cyan-400">[音频] {payload.format}</span>;
-
-    case "usage":
-      return (
-        <span className="text-gray-400">
-          [使用量] 输入: {payload.input_tokens}, 输出: {payload.output_tokens}
-          {payload.reasoning_tokens !== undefined && `, 思考: ${payload.reasoning_tokens}`}
-        </span>
-      );
-
-    case "metadata":
-      return (
-        <span className="text-gray-400">
-          [元数据] 模型: {payload.model}, 结束原因: {payload.finish_reason || "无"}
-        </span>
-      );
-
-    case "error":
-      return <span className="text-red-400">[错误] {payload.code}: {payload.message}</span>;
-
-    case "warning":
-      return <span className="text-yellow-400">[警告] {payload.code}: {payload.message}</span>;
-
-    default:
-      return null;
-  }
+// 渲染 ContentItem[] 的辅助函数
+function renderContentItems(content: ContentItem[]): React.ReactNode {
+  return content.map((item, index) => {
+    if (item.type === "block") {
+      const block = item.data;
+      switch (block.block_type) {
+        case "text":
+          return (
+            <p key={index} className="whitespace-pre-wrap text-pretty">
+              {block.content}
+            </p>
+          );
+        case "thinking":
+          return <ThinkingBlock key={index} block={block} />;
+        case "tool_call":
+          return <ToolCallBlock key={index} block={block} />;
+        case "tool_result":
+          return <ToolResultBlock key={index} block={block} />;
+        default:
+          return (
+            <p key={index} className="whitespace-pre-wrap text-pretty">
+              {block.content}
+            </p>
+          );
+      }
+    }
+    // Plan 类型暂不渲染
+    return null;
+  });
 }
 
 // Props 接口
 interface Ai05Props {
   account: AccountInfo | null
-  messages: ChatMessage[]
+  messages: MessageDto[]
 }
 
 interface DemoMessage {
   id: string;
   role: "user" | "assistant";
-  content: string;
-  /** 额外的流式事件（如工具调用） */
-  extra?: LlmChunkPayload[];
+  /** 按 order_num 排序的内容块数组 */
+  content: ContentItem[];
+  /** Plan 步骤（用于展示） */
+  planSteps?: import("@/lib/api/tauri-llm").PlanStepDto[];
+  planReasoning?: string;
 }
 
-interface ToolCallState {
+/** 流式过程中的临时块 */
+interface StreamingBlock {
+  block_type: string;
+  order_num: number;
+  content: string;
+  thinking?: string;
+  tool_name?: string;
+  tool_arguments?: string;
+  tool_result?: string;
+  tool_status?: string;
+}
+
+/** 工具调用缓冲区（用于聚合增量参数） */
+interface ToolCallBuffer {
   index: number;
   id: string;
   name: string;
@@ -133,8 +125,23 @@ const INITIAL_MESSAGES: DemoMessage[] = [
   {
     id: "intro",
     role: "assistant",
-    content:
-      "在 **Tauri 壳** 中发送消息会通过 Rust 调用已配置的 LLM。请在 `src/lib/tauri-llm.ts` 里修改 **`LLM_LOCAL`**（`provider` / `model` / `temperature`）。浏览器里单独跑 Vite 预览时没有后端，会走本地占位回复。",
+    content: [
+      {
+        type: "block",
+        data: {
+          id: "intro-block",
+          mid: "intro",
+          block_type: "text",
+          order_num: 0,
+          source: "system",
+          content:
+            "在 **Tauri 壳** 中发送消息会通过 Rust 调用已配置的 LLM。请在 `src/lib/tauri-llm.ts` 里修改 **`LLM_LOCAL`**（`provider` / `model` / `temperature`）。浏览器里单独跑 Vite 预览时没有后端，会走本地占位回复。",
+          extends: "",
+          metadata: "",
+          created_at: "",
+        } satisfies ContentBlockDto,
+      },
+    ],
   },
 ];
 
@@ -206,10 +213,10 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
       setMessages(INITIAL_MESSAGES);
       return;
     }
-
+    console.log("storeMessages:", storeMessages);
     if (storeMessages.length > 0) {
-      // 将后端消息转换为前端显示格式
-      const converted = storeMessages.map((msg) => ({
+      // 直接使用后端返回的 content（已经是 ContentItem[]）
+      const converted: DemoMessage[] = storeMessages.map((msg) => ({
         id: msg.id,
         role: msg.role as "user" | "assistant",
         content: msg.content,
@@ -228,33 +235,142 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
       return;
     }
 
+    // 创建 user 消息（content 为单个 text block）
     const userMessage: DemoMessage = {
       id: `user-${nanoid()}`,
       role: "user",
-      content: text,
+      content: [
+        {
+          type: "block",
+          data: {
+            id: `user-block-${nanoid(8)}`,
+            mid: "",
+            block_type: "text",
+            order_num: 0,
+            source: "user",
+            content: text,
+            extends: "",
+            metadata: "",
+            created_at: new Date().toISOString(),
+          } satisfies ContentBlockDto,
+        },
+      ],
     };
 
     setMessages((prev) => [...prev, userMessage]);
-
-
 
     if (!isTauriRuntime()) {
       const stub: DemoMessage = {
         id: `assistant-${nanoid()}`,
         role: "assistant",
-        content: MOCK_FALLBACK,
+        content: [
+          {
+            type: "block",
+            data: {
+              id: `stub-block-${nanoid(8)}`,
+              mid: "",
+              block_type: "text",
+              order_num: 0,
+              source: "system",
+              content: MOCK_FALLBACK,
+              extends: "",
+              metadata: "",
+              created_at: new Date().toISOString(),
+            } satisfies ContentBlockDto,
+          },
+        ],
       };
       setMessages((prev) => [...prev, stub]);
       return;
     }
 
     const assistantId = `assistant-${nanoid()}`;
-    const toolCallBuffer: Map<number, ToolCallState> = new Map();
 
+    // 流式处理状态
+    const streamingBlocks: StreamingBlock[] = [];
+    const toolBuffer: Map<string, ToolCallBuffer> = new Map();
+
+    // 创建 assistant 占位消息
     setMessages((prev) => [
       ...prev,
-      { id: assistantId, role: "assistant", content: "", extra: [] },
+      {
+        id: assistantId,
+        role: "assistant",
+        content: [],
+      },
     ]);
+
+    // 辅助函数：将 StreamingBlock 转换为 ContentItem
+    const blockToContentItem = (block: StreamingBlock, mid: string): ContentItem => {
+      const baseData = {
+        id: `${mid}-block-${block.order_num}`,
+        mid,
+        block_type: block.block_type as ContentBlockDto["block_type"],
+        order_num: block.order_num,
+        source: "chat",
+        extends: "",
+        metadata: "",
+        created_at: new Date().toISOString(),
+      };
+
+      switch (block.block_type) {
+        case "text":
+          return {
+            type: "block",
+            data: {
+              ...baseData,
+              content: block.content,
+            } satisfies ContentBlockDto,
+          };
+        case "thinking":
+          return {
+            type: "block",
+            data: {
+              ...baseData,
+              thinking: block.content,
+            } satisfies ContentBlockDto,
+          };
+        case "tool_call":
+          return {
+            type: "block",
+            data: {
+              ...baseData,
+              tool_name: block.tool_name,
+              tool_arguments: block.tool_arguments,
+            } satisfies ContentBlockDto,
+          };
+        case "tool_result":
+          return {
+            type: "block",
+            data: {
+              ...baseData,
+              tool_name: block.tool_name,
+              tool_output: block.tool_result,
+              tool_status: block.tool_status,
+            } satisfies ContentBlockDto,
+          };
+        default:
+          return {
+            type: "block",
+            data: {
+              ...baseData,
+              content: block.content,
+            } satisfies ContentBlockDto,
+          };
+      }
+    };
+
+    // 更新 assistant 消息的 content
+    const updateAssistantContent = (blocks: StreamingBlock[]) => {
+      const contentItems: ContentItem[] = blocks.map((b) =>
+        blockToContentItem(b, assistantId)
+      );
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantId ? { ...m, content: contentItems } : m
+        )
+      );
+    };
 
     try {
       await streamLlmChat({
@@ -263,94 +379,94 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
         messages: [{ role: "user" as const, content: text }],
         onChunk: (payload) => {
           console.log("onChunk:", payload);
-
           switch (payload.kind) {
+            case "block_start":
+              // 创建新块
+              streamingBlocks.push({
+                block_type: payload.block_type,
+                order_num: payload.order_num,
+                content: "",
+              });
+              break;
+
             case "text_delta":
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === assistantId
-                    ? { ...m, content: m.content + payload.text }
-                    : m
-                )
-              );
+              // 累加到当前 text block
+              if (streamingBlocks.length > 0) {
+                const current = streamingBlocks[streamingBlocks.length - 1];
+                if (current.block_type === "text") {
+                  current.content += payload.text;
+                  updateAssistantContent(streamingBlocks);
+                }
+              }
+              break;
+
+            case "reasoning_delta":
+              // 累加到当前 thinking block
+              if (streamingBlocks.length > 0) {
+                const current = streamingBlocks[streamingBlocks.length - 1];
+                if (current.block_type === "thinking") {
+                  current.content += payload.text;
+                } else {
+                  // 如果当前不是 thinking，创建新的 thinking block
+                  streamingBlocks.push({
+                    block_type: "thinking",
+                    order_num: streamingBlocks.length,
+                    content: payload.text,
+                  });
+                }
+                updateAssistantContent(streamingBlocks);
+              }
               break;
 
             case "tool_call_start":
-              toolCallBuffer.set(payload.index, {
+              // 记录到 toolBuffer（使用 index 作为 key）
+              toolBuffer.set(String(payload.index), {
                 index: payload.index,
                 id: payload.id,
                 name: payload.name,
                 arguments: "",
               });
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === assistantId
-                    ? {
-                        ...m,
-                        extra: [...(m.extra || []), payload],
-                      }
-                    : m
-                )
-              );
               break;
 
             case "tool_call_delta":
-              const tc = toolCallBuffer.get(payload.index);
-              if (tc) {
-                tc.arguments += payload.arguments;
+              // 累加参数（使用 index 作为 key）
+              const tb = toolBuffer.get(String(payload.index));
+              if (tb) {
+                tb.arguments += payload.arguments;
               }
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === assistantId
-                    ? {
-                        ...m,
-                        extra: [...(m.extra || []), payload],
-                      }
-                    : m
-                )
-              );
               break;
 
             case "tool_call_done":
-              toolCallBuffer.delete(payload.index);
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === assistantId
-                    ? {
-                        ...m,
-                        extra: [...(m.extra || []), payload],
-                      }
-                    : m
-                )
-              );
+              // 合并到当前 block（使用 index 作为 key）
+              const completed = toolBuffer.get(String(payload.index));
+              if (completed && streamingBlocks.length > 0) {
+                const current = streamingBlocks[streamingBlocks.length - 1];
+                current.tool_name = completed.name;
+                current.tool_arguments = completed.arguments;
+                updateAssistantContent(streamingBlocks);
+              }
+              toolBuffer.delete(String(payload.index));
               break;
 
             case "tool_result":
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === assistantId
-                    ? {
-                        ...m,
-                        extra: [...(m.extra || []), payload],
-                      }
-                    : m
-                )
-              );
+              // 更新当前 block
+              if (streamingBlocks.length > 0) {
+                const current = streamingBlocks[streamingBlocks.length - 1];
+                current.tool_name = payload.name;
+                current.tool_result = JSON.stringify(payload.result);
+                current.tool_status = payload.success ? "success" : "failed";
+                updateAssistantContent(streamingBlocks);
+              }
               break;
 
-            case "reasoning_delta":
-            case "reference":
-            case "audio_delta":
-            case "usage":
-            case "metadata":
-            case "warning":
-            case "error":
+            case "plan_steps":
               setMessages((prev) =>
                 prev.map((m) =>
                   m.id === assistantId
                     ? {
                         ...m,
-                        extra: [...(m.extra || []), payload],
+                        planSteps: payload.steps,
+                        planReasoning: payload.reasoning,
                       }
                     : m
                 )
@@ -358,34 +474,41 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
               break;
 
             case "done":
-              // done 事件不做额外处理
+              // done 事件不做额外处理（内容已在各 delta 事件中累加）
+              break;
+
+            case "reference":
+            case "audio_delta":
+            case "usage":
+            case "metadata":
+            case "warning":
+            case "error":
+              // 这些事件暂不处理
               break;
           }
         },
         onStreamError: (payload) => {
           console.log("onStreamError:", payload);
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantId
-                ? { ...m, content: `**错误**\n\n${payload.message}` }
-                : m
-            )
-          );
+          // 添加错误 block
+          streamingBlocks.push({
+            block_type: "text",
+            order_num: streamingBlocks.length,
+            content: `**错误**\n\n${payload.message}`,
+          });
+          updateAssistantContent(streamingBlocks);
         },
         onStreamEnd: async () => {
-          // LLM 流结束时，保存 assistant 回复到数据库
-
+          // LLM 流结束，后端已入库，前端只需更新显示
         },
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantId
-            ? { ...m, content: `**调用失败**\n\n${msg}` }
-            : m
-        )
-      );
+      streamingBlocks.push({
+        block_type: "text",
+        order_num: streamingBlocks.length,
+        content: `**调用失败**\n\n${msg}`,
+      });
+      updateAssistantContent(streamingBlocks);
     }
   };
 
@@ -490,23 +613,14 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
                       message.role === "assistant" && "max-w-prose"
                     )}
                   >
-                    {message.role === "assistant" ? (
-                      <MessageResponse>{message.content}</MessageResponse>
-                    ) : (
-                      <p className="whitespace-pre-wrap text-pretty">
-                        {message.content}
-                      </p>
-                    )}
-                    {/* 显示额外的事件（如工具调用） */}
-                    {message.extra && message.extra.length > 0 && (
-                      <div className="mt-2 border-t border-border/50 pt-2 text-xs">
-                        <p className="font-medium text-muted-foreground mb-1">事件记录:</p>
-                        {message.extra.map((evt, i) => (
-                          <div key={i} className="py-1 text-muted-foreground">
-                            {renderChunkEvent(evt)}
-                          </div>
-                        ))}
-                      </div>
+                    {/* 渲染 content 数组 */}
+                    {renderContentItems(message.content)}
+                    {/* Plan 步骤列表 */}
+                    {message.planSteps && message.planSteps.length > 0 && (
+                      <PlanStepsList
+                        steps={message.planSteps}
+                        reasoning={message.planReasoning}
+                      />
                     )}
                   </MessageContent>
                 </Message>

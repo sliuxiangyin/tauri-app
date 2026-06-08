@@ -5,39 +5,8 @@
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 
-/// 内容块类型枚举
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum BlockType {
-    /// 普通文本内容
-    Text,
-    /// 思考过程/推理链
-    Thinking,
-    /// 工具调用
-    ToolCall,
-    /// 工具调用结果
-    ToolResult,
-}
-
-impl BlockType {
-    pub fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
-            "text" => BlockType::Text,
-            "thinking" => BlockType::Thinking,
-            "tool_call" => BlockType::ToolCall,
-            "tool_result" => BlockType::ToolResult,
-            _ => BlockType::Text,
-        }
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            BlockType::Text => "text",
-            BlockType::Thinking => "thinking",
-            BlockType::ToolCall => "tool_call",
-            BlockType::ToolResult => "tool_result",
-        }
-    }
-}
+// 从 provider::llm::types 重新导出 BlockType（保持向后兼容）
+pub use crate::provider::llm::types::BlockType;
 
 /// 内容来源枚举
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -3,6 +3,7 @@
 //! 封装当前对话的内部状态，自动管理 message_id 和 block_order_num
 //! 提供面向对象的 API，直接写入数据库，无需事件总线
 
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -10,9 +11,12 @@ use std::sync::{Arc, Mutex};
 use sea_orm::DatabaseConnection;
 
 use crate::entity::conversations::BlockType;
+use crate::entity::plans::{CreatePlanPayload, UpdatePlanPayload};
+use crate::provider::llm::types::IntentPlan;
 use crate::services::db::message;
+use crate::services::db::plans as plan_db;
 
-use super::messages_event::{BlockAccumulator, MessageStatus};
+use super::messages_event::{BlockAccumulator, BlockInfo, MessageStatus, ToolCallRecord};
 
 /// 消息会话
 ///
@@ -46,8 +50,25 @@ pub struct MessagesSession {
     /// 思考缓冲（用于聚合 ReasoningDelta）
     thinking_buffer: String,
 
-    /// 第一个 Text block 的 ID（用于后续更新）
-    first_text_block_id: Mutex<Option<String>>,
+    /// 当前 Plan ID（如果有）
+    plan_id: Mutex<Option<String>>,
+}
+
+impl Clone for MessagesSession {
+    fn clone(&self) -> Self {
+        Self {
+            message_id: self.message_id.clone(),
+            account_id: self.account_id.clone(),
+            session_id: self.session_id.clone(),
+            chat_type: self.chat_type.clone(),
+            block_order: AtomicI32::new(self.block_order.load(Ordering::SeqCst)),
+            db: self.db.clone(),
+            tool_accumulators: self.tool_accumulators.clone(),
+            text_buffer: self.text_buffer.clone(),
+            thinking_buffer: self.thinking_buffer.clone(),
+            plan_id: Mutex::new(self.plan_id.lock().unwrap().clone()),
+        }
+    }
 }
 
 impl MessagesSession {
@@ -115,31 +136,6 @@ impl MessagesSession {
         };
         let message_id = message::save_message(&*db, assistant_payload).await?;
 
-        // 4. 创建 assistant 空 Text block（用于后续更新）
-        let assistant_conversation_payload = crate::entity::conversations::CreateConversationPayload {
-            mid: message_id.clone(),
-            block_type: BlockType::Text.as_str().to_string(),
-            order_num: 0,
-            source: "chat".to_string(),
-            source_id: None,
-            step_index: None,
-            content: Some(String::new()), // 空内容，后续 add_text_block 会更新
-            content_summary: None,
-            thinking: None,
-            tool_name: None,
-            tool_arguments: None,
-            tool_output: None,
-            tool_status: None,
-            tool_duration_ms: None,
-            tool_error: None,
-            extends: None,
-            attachments: None,
-            metadata: None,
-        };
-        let first_text_block_id = message::save_conversation(&*db, assistant_conversation_payload)
-            .await
-            .ok();
-
         tracing::debug!("[MessagesSession] 创建会话成功: user_id={}, assistant_id={}", _user_message_id, message_id);
 
         Ok(Self {
@@ -152,25 +148,12 @@ impl MessagesSession {
             tool_accumulators: HashMap::new(),
             text_buffer: String::new(),
             thinking_buffer: String::new(),
-            first_text_block_id: Mutex::new(first_text_block_id),
+            plan_id: Mutex::new(None),
         })
     }
 
-    /// 添加文本块
-    pub async fn add_text_block(&self, text: &str) -> i32 {
-        // 如果是第一个 Text block（order_num=0），则更新已有 block
-        let block_id_to_update = {
-            let mut block_id_guard = self.first_text_block_id.lock().unwrap();
-            block_id_guard.take()
-        };
-
-        if let Some(block_id) = block_id_to_update {
-            if let Err(e) = message::update_conversation_content(&*self.db, block_id, text.to_string()).await {
-                tracing::error!("[MessagesSession] 更新文本块失败: {}", e);
-            }
-            return 0;
-        }
-
+    /// 添加文本块（每次都新增记录）
+    pub async fn add_text_block(&self, text: &str) -> BlockInfo {
         let order_num = self.block_order.fetch_add(1, Ordering::SeqCst);
 
         let payload = crate::entity::conversations::CreateConversationPayload {
@@ -198,11 +181,11 @@ impl MessagesSession {
             tracing::error!("[MessagesSession] 保存文本块失败: {}", e);
         }
 
-        order_num
+        BlockInfo::new(BlockType::Text.as_str(), order_num)
     }
 
     /// 添加思考块
-    pub async fn add_thinking_block(&self, text: &str) -> i32 {
+    pub async fn add_thinking_block(&self, text: &str) -> BlockInfo {
         let order_num = self.block_order.fetch_add(1, Ordering::SeqCst);
 
         let payload = crate::entity::conversations::CreateConversationPayload {
@@ -230,17 +213,14 @@ impl MessagesSession {
             tracing::error!("[MessagesSession] 保存思考块失败: {}", e);
         }
 
-        order_num
+        BlockInfo::new(BlockType::Thinking.as_str(), order_num)
     }
 
-    /// 处理工具调用开始
-    pub async fn on_tool_call_start(&mut self, call_id: String, name: String) -> i32 {
+    /// 添加工具调用记录（包含 call_id, name, arguments）
+    ///
+    /// 在 process_tool_batch 返回 tool_calls 后，由调用方统一入库。
+    pub async fn add_tool_call(&self, record: &ToolCallRecord) -> BlockInfo {
         let order_num = self.block_order.fetch_add(1, Ordering::SeqCst);
-
-        // 创建累加器
-        let mut accumulator = BlockAccumulator::default();
-        accumulator.tool_name = Some(name.clone());
-        self.tool_accumulators.insert(call_id, accumulator);
 
         let payload = crate::entity::conversations::CreateConversationPayload {
             mid: self.message_id.clone(),
@@ -248,8 +228,8 @@ impl MessagesSession {
             order_num,
             content: None,
             thinking: None,
-            tool_name: Some(name),
-            tool_arguments: None,
+            tool_name: Some(record.name.clone()),
+            tool_arguments: Some(record.arguments.to_string()),
             tool_output: None,
             tool_status: Some("pending".to_string()),
             source: "chat".to_string(),
@@ -267,39 +247,22 @@ impl MessagesSession {
             tracing::error!("[MessagesSession] 保存工具调用块失败: {}", e);
         }
 
-        order_num
-    }
-
-    /// 处理工具参数增量
-    pub fn on_tool_call_delta(&mut self, call_id: &str, arguments: &str) {
-        if let Some(acc) = self.tool_accumulators.get_mut(call_id) {
-            acc.add_arguments(arguments);
-        }
-    }
-
-    /// 处理工具调用完成（参数收集完毕）
-    pub fn on_tool_call_done(&mut self, call_id: &str) -> Option<i32> {
-        let accumulator = self.tool_accumulators.remove(call_id)?;
-        let order_num = self.block_order.load(Ordering::SeqCst);
         tracing::debug!(
-            "[MessagesSession] 工具调用完成: call_id={}, args_len={}",
-            call_id,
-            accumulator.tool_arguments.len()
+            "[MessagesSession] 保存工具调用: call_id={}, name={}",
+            record.call_id,
+            record.name
         );
-        Some(order_num)
+
+        BlockInfo::new(BlockType::ToolCall.as_str(), order_num)
     }
 
-    /// 处理工具执行结果
-    pub async fn on_tool_result(
-        &mut self,
-        _call_id: String,
-        name: String,
-        output: serde_json::Value,
-        success: bool,
-    ) -> i32 {
+    /// 添加工具执行结果记录
+    ///
+    /// 在 process_tool_batch 返回 tool_calls 后，由调用方统一入库。
+    pub async fn add_tool_result(&self, record: &ToolCallRecord) -> BlockInfo {
         let order_num = self.block_order.fetch_add(1, Ordering::SeqCst);
 
-        let tool_status = if success { "success" } else { "failed" };
+        let tool_status = if record.success { "success" } else { "failed" };
 
         let payload = crate::entity::conversations::CreateConversationPayload {
             mid: self.message_id.clone(),
@@ -307,9 +270,9 @@ impl MessagesSession {
             order_num,
             content: None,
             thinking: None,
-            tool_name: Some(name),
+            tool_name: Some(record.name.clone()),
             tool_arguments: None,
-            tool_output: Some(output.to_string()),
+            tool_output: Some(record.result.as_ref().map(|v| v.to_string()).unwrap_or_default()),
             tool_status: Some(tool_status.to_string()),
             source: "chat".to_string(),
             source_id: None,
@@ -326,7 +289,14 @@ impl MessagesSession {
             tracing::error!("[MessagesSession] 保存工具结果块失败: {}", e);
         }
 
-        order_num
+        tracing::debug!(
+            "[MessagesSession] 保存工具结果: call_id={}, name={}, success={}",
+            record.call_id,
+            record.name,
+            record.success
+        );
+
+        BlockInfo::new(BlockType::ToolResult.as_str(), order_num)
     }
 
     /// 标记工具执行错误
@@ -360,27 +330,27 @@ impl MessagesSession {
     }
 
     /// 刷新文本缓冲（将累积的文本写入数据库）
-    pub async fn flush_text_buffer(&self) -> Option<i32> {
+    pub async fn flush_text_buffer(&self) -> Option<BlockInfo> {
         if self.text_buffer.is_empty() {
             return None;
         }
 
         let content = self.text_buffer.clone();
-        let order_num = self.add_text_block(&content).await;
+        let block_info = self.add_text_block(&content).await;
 
-        Some(order_num)
+        Some(block_info)
     }
 
     /// 刷新思考缓冲（将累积的思考写入数据库）
-    pub async fn flush_thinking_buffer(&self) -> Option<i32> {
+    pub async fn flush_thinking_buffer(&self) -> Option<BlockInfo> {
         if self.thinking_buffer.is_empty() {
             return None;
         }
 
         let content = self.thinking_buffer.clone();
-        let order_num = self.add_thinking_block(&content).await;
+        let block_info = self.add_thinking_block(&content).await;
 
-        Some(order_num)
+        Some(block_info)
     }
 
     /// 完成会话（刷新缓冲 + 更新消息状态）
@@ -405,5 +375,80 @@ impl MessagesSession {
     /// 获取下一块序号
     pub fn next_order_num(&self) -> i32 {
         self.block_order.load(Ordering::SeqCst)
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Plan 管理
+    // ──────────────────────────────────────────────────────────────
+
+    /// 保存 Plan 到数据库
+    ///
+    /// 从 IntentPlan 创建并保存 Plan 记录，order_num 取自当前 block_order
+    pub async fn save_plan(&self, intent_plan: &IntentPlan) -> Result<String, String> {
+        // plan 的 order_num 取自当前 block_order，然后递增 block_order
+        // 保证后续 blocks 的 order_num 大于 plan
+        let order_num = self.block_order.fetch_add(1, Ordering::SeqCst);
+
+        let payload = CreatePlanPayload::from_intent_plan(self.message_id.clone(), intent_plan)
+            .with_order_num(order_num);
+        let plan_id = plan_db::save_plan(&*self.db, payload).await?;
+
+        // 保存 plan_id 到结构体（使用代码块限制 guard 作用域）
+        {
+            let mut guard = self.plan_id.lock().unwrap();
+            *guard = Some(plan_id.clone());
+        }
+
+        tracing::debug!("[MessagesSession] 保存 Plan 成功: plan_id={}", plan_id);
+        Ok(plan_id)
+    }
+
+    /// 更新 Plan 结果
+    ///
+    /// 在 Plan 执行完成后调用，更新 step_results 和 stop_reason
+    pub async fn update_plan_result(
+        &self,
+        step_results_json: Option<String>,
+        stop_reason: &str,
+    ) -> Result<(), String> {
+        // 从 plan_id 获取 plan_id（使用代码块限制 guard 作用域）
+        let plan_id = {
+            let guard = self.plan_id.lock().unwrap();
+            guard.as_ref()
+                .ok_or_else(|| "No plan to update".to_string())?
+                .clone()
+        };  // guard 在这里自动 drop
+
+        let payload = UpdatePlanPayload::new()
+            .with_step_results_json(step_results_json)
+            .with_stop_reason_str(stop_reason.to_string());
+
+        plan_db::update_plan(&*self.db, plan_id, payload).await?;
+
+        tracing::debug!("[MessagesSession] 更新 Plan 结果成功");
+        Ok(())
+    }
+
+    /// 获取当前 Plan ID
+    pub fn current_plan_id(&self) -> Option<String> {
+        self.plan_id.lock().unwrap().clone()
+    }
+}
+
+// ──────────────────────────────────────────────────────────────
+// UpdatePlanPayload 扩展方法
+// ──────────────────────────────────────────────────────────────
+
+impl UpdatePlanPayload {
+    /// 设置步骤结果（从 JSON 字符串）
+    pub fn with_step_results_json(mut self, results: Option<String>) -> Self {
+        self.step_results = results;
+        self
+    }
+
+    /// 设置停止原因（从字符串）
+    pub fn with_stop_reason_str(mut self, reason: String) -> Self {
+        self.stop_reason = Some(reason);
+        self
     }
 }

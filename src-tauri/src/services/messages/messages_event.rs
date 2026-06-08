@@ -1,8 +1,11 @@
 //! 消息会话辅助类型
 //!
-//! 提供 MessageStatus 和 BlockAccumulator 供 MessagesSession 使用
+//! 提供 MessageStatus、BlockInfo、ToolCallRecord 和 BlockAccumulator 供 MessagesSession 使用
 
 use serde::{Deserialize, Serialize};
+
+// 重新导出 ToolCallRecord（定义在 provider::llm::types）
+pub use crate::provider::llm::types::ToolCallRecord;
 
 /// 消息状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -22,8 +25,26 @@ impl MessageStatus {
     }
 }
 
+/// Block 信息（用于前端渲染 block 边界）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockInfo {
+    /// Block 类型：text, thinking, tool_call, tool_result
+    pub block_type: String,
+    /// 块序号（自动递增）
+    pub order_num: i32,
+}
+
+impl BlockInfo {
+    pub fn new(block_type: &str, order_num: i32) -> Self {
+        Self {
+            block_type: block_type.to_string(),
+            order_num,
+        }
+    }
+}
+
 /// 块累加器（用于聚合工具调用增量参数）
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct BlockAccumulator {
     /// 文本内容累积
     pub text: String,

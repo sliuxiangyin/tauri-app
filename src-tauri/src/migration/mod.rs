@@ -6,6 +6,7 @@ mod m20250514_000001_mcp;
 mod m20250515_000001_conversations;
 mod m20250515_000002_plans;
 mod m20250515_000003_messages;
+mod m20250607_000001_plans_order_num;
 
 pub struct Migrator;
 
@@ -19,6 +20,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20250515_000001_conversations::Migration),
             Box::new(m20250515_000002_plans::Migration),
             Box::new(m20250515_000003_messages::Migration),
+            Box::new(m20250607_000001_plans_order_num::Migration),
         ]
     }
 }

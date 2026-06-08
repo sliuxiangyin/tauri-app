@@ -26,6 +26,10 @@ export type LlmChunkPayload =
   | { account_id: string; kind: "tool_call_delta"; index: number; arguments: string }
   | { account_id: string; kind: "tool_call_done"; index: number; arguments: unknown }
   | { account_id: string; kind: "tool_result"; call_id: string; name: string; result: unknown; success: boolean }
+  // Block 边界
+  | { account_id: string; kind: "block_start"; block_type: string; order_num: number }
+  // Agent Plan 步骤
+  | { account_id: string; kind: "plan_steps"; reasoning: string; steps: PlanStepDto[] }
   // 引用
   | { account_id: string; kind: "reference"; source_type: string; title: string; url: string; snippet?: string }
   // 音频
@@ -36,6 +40,17 @@ export type LlmChunkPayload =
   // 元数据
   | { account_id: string; kind: "usage"; input_tokens: number; output_tokens: number; reasoning_tokens?: number }
   | { account_id: string; kind: "metadata"; model: string; finish_reason?: string; request_id?: string };
+
+/** Plan 步骤（与 Rust PlanStep 对齐） */
+export interface PlanStepDto {
+  order: number;
+  step_type: string;
+  tool_name: string;
+  parameters: unknown;
+  step_goal: string;
+  expected_output?: string;
+  depends_on?: number;
+}
 
 export type LlmErrorPayload = {
   account_id: string;
@@ -88,7 +103,6 @@ export async function streamLlmChat(options: {
   let unlistenErr: (() => void) | null = null;
 
   const unlistenChunkPromise = listen<LlmChunkPayload>("llm:chunk", (event) => {
-    console.log("[llm:chunk]", event);
     if (event.payload.account_id !== accountId) {
       return;
     }

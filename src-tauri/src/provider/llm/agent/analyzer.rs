@@ -132,9 +132,7 @@ impl IntentAnalyzer {
         messages: Vec<ChatMessage>,
         available_tools: Vec<ToolDefinition>,
     ) -> Result<String, LlmError> {
-        println!("[IntentAnalyzer] send_intent_request: building request...");
         let req = self.build_intent_request(model, messages, available_tools)?;
-        println!("[IntentAnalyzer] send_intent_request: calling provider.send_message...");
         self.provider.send_message(req).await
     }
 
@@ -146,14 +144,10 @@ impl IntentAnalyzer {
         available_tools: Vec<ToolDefinition>,
     ) -> Result<ChatRequest, LlmError> {
         let system_prompt = intent_system_prompt();
-        println!("[IntentAnalyzer] system_prompt length: {} chars", system_prompt.len());
         
         let user_request = extract_user_request(&messages);
-        println!("[IntentAnalyzer] user_request: '{}'", user_request);
         
         let user_message = build_intent_user_message(&available_tools, &user_request);
-        println!("[IntentAnalyzer] user_message length: {} chars", user_message.len());
-        println!("[IntentAnalyzer] user_message preview: {}", &user_message[..user_message.len().min(500)]);
         
         let req_messages = vec![
             ChatMessage::new(Role::System, system_prompt),
@@ -214,9 +208,8 @@ impl IntentAnalyzer {
                     LlmStreamEvent::Warning { .. } => {}
                     LlmStreamEvent::Usage { .. } => {}
                     LlmStreamEvent::Metadata { .. } => {}
-                    LlmStreamEvent::ToolCallReady { .. } => {}
-                    LlmStreamEvent::ToolCallExecuted { .. } => {}
-                    LlmStreamEvent::ToolCallBatchEnd { .. } => {}
+                    LlmStreamEvent::PlanSteps { .. } => {}
+                    LlmStreamEvent::BlockStart { .. } => {}
                 },
                 Err(e) => {
                     return Err(e);
