@@ -24,6 +24,7 @@ use crate::provider::llm::{
 };
 use crate::services::chat_model_service::ChatModelService;
 use crate::services::chat_tools_service;
+use crate::provider::llm::llm_tool_trait::ToolExecutor;
 use crate::services::llm::tool_executor::McpToolExecutor;
 use crate::services::messages::MessagesSession;
 use crate::services::messages_service::MessagesService;
@@ -197,7 +198,7 @@ impl LlmService {
 
         // 9. 分发执行（plan 操作 + text block 写入在各 execute 方法内部完成）
         // 保存 stream_sender 的 clone 用于错误处理
-        let stream_sender_for_error = stream_sender.clone();
+        let _stream_sender_for_error = stream_sender.clone();
 
         let result = if intent_plan.need_agent && !intent_plan.steps.is_empty() && false {
             self.execute_agent_mode(
@@ -215,6 +216,7 @@ impl LlmService {
             self.execute_simple_mode(
                 &mut session,
                 provider,
+                 mcp,
                 model_id,
                 full_messages,
                 tools_ref,
@@ -233,7 +235,7 @@ impl LlmService {
             }
             Err(e) => {
                 let error_content = format!("**调用失败**\n\n{}", e);
-                let block_info = session.add_text_block(&error_content).await;
+                let _block_info = session.add_text_block(&error_content).await;
                 session
                     .complete(crate::services::messages::MessageStatus::Failed)
                     .await;
@@ -250,6 +252,7 @@ impl LlmService {
         &self,
         session: &mut MessagesSession,
         provider: Arc<dyn LlmProvider>,
+           mcp: Arc<dyn McpClient>,
         model_id: String,
         messages: Vec<ChatMessage>,
         tools: Option<Vec<crate::provider::llm::types::ToolDefinition>>,
@@ -268,8 +271,8 @@ impl LlmService {
             .stream_chat(req, abort_flag)
             .await
             .map_err(|e| e.to_string())?;
-
-        let result = crate::provider::llm::process_tool_batch(stream, None, stream_sender.as_ref())
+        let executor: Arc<dyn ToolExecutor> = Arc::new(McpToolExecutor::new(mcp.clone()));
+        let result = crate::provider::llm::process_tool_batch(stream, Some(executor), stream_sender.as_ref())
             .await
             .map_err(|e| e.to_string())?;
 
@@ -349,7 +352,7 @@ impl LlmService {
         }
 
         // 3. 执行 Agent 循环
-        let executor = Arc::new(McpToolExecutor::new(mcp));
+        let executor: Arc<dyn ToolExecutor> = Arc::new(McpToolExecutor::new(mcp));
         let tool_names: Vec<String> = tools.iter().map(|t| t.function.name.clone()).collect();
 
         let plan_executor = PlanExecutor::new(executor)

@@ -124,6 +124,6 @@ pub async fn get_chat_model(
 pub async fn get_all_chat_models(
     db_state: State<'_, DbState>,
 ) -> Result<Vec<ModelGroup>, String> {
-    let dbAccessor: Arc<dyn crate::services::traits::DbAccessor> = Arc::new(db_state.inner().clone());
-    chat_model_service::get_all_models_grouped(&dbAccessor).await
+    let db_accessor: Arc<dyn crate::services::traits::DbAccessor> = Arc::new(db_state.inner().clone());
+    chat_model_service::get_all_models_grouped(&db_accessor).await
 }

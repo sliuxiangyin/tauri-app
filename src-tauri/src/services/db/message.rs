@@ -6,8 +6,11 @@ use sea_orm::{
     QueryOrder, QuerySelect, Set,
 };
 
+#[allow(unused_imports)]
 use crate::entity::conversations::{self, Model as ConversationModel};
+#[allow(unused_imports)]
 use crate::entity::message::{self, Model as MessageModel};
+#[allow(unused_imports)]
 use crate::entity::plans::{self, Model as PlanModel};
 use crate::entity::{ConversationEntity, MessageEntity, PlanEntity};
 
@@ -465,6 +468,7 @@ pub async fn update_message_status(
 }
 
 /// 根据 mid 和 order_num 查找 conversation block
+#[allow(dead_code)]
 pub async fn get_conversation_by_order(
     db: &DatabaseConnection,
     mid: String,
@@ -480,6 +484,7 @@ pub async fn get_conversation_by_order(
 }
 
 /// 更新 conversation block 的 content
+#[allow(dead_code)]
 pub async fn update_conversation_content(
     db: &DatabaseConnection,
     block_id: String,
@@ -499,5 +504,7 @@ pub async fn update_conversation_content(
 }
 
 // 重新导出 Payload 类型供上层使用
+#[allow(unused_imports)]
 pub use crate::entity::conversations::CreateConversationPayload;
+#[allow(unused_imports)]
 pub use crate::entity::message::CreateMessagePayload;

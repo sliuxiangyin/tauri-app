@@ -4,6 +4,7 @@ use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set,
 };
 
+#[allow(unused_imports)]
 use crate::entity::plans::{self as plans_entity, ActiveModel, Model as PlanModel};
 use crate::entity::plans::{CreatePlanPayload, UpdatePlanPayload};
 
@@ -37,6 +38,7 @@ pub async fn save_plan(
 }
 
 /// 根据 mid 获取最新的 Plan
+#[allow(dead_code)]
 pub async fn get_plan_by_mid(
     db: &DatabaseConnection,
     mid: String,
@@ -51,6 +53,7 @@ pub async fn get_plan_by_mid(
 }
 
 /// 根据 id 获取 Plan
+#[allow(dead_code)]
 pub async fn get_plan_by_id(
     db: &DatabaseConnection,
     plan_id: String,
@@ -92,6 +95,7 @@ pub async fn update_plan(
 }
 
 /// 删除 Plan（根据 mid）
+#[allow(dead_code)]
 pub async fn delete_plan_by_mid(db: &DatabaseConnection, mid: String) -> Result<u64, String> {
     let result = plans_entity::Entity::delete_many()
         .filter(plans_entity::Column::Mid.eq(&mid))

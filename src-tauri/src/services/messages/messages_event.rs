@@ -44,6 +44,7 @@ impl BlockInfo {
 }
 
 /// 块累加器（用于聚合工具调用增量参数）
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct BlockAccumulator {
     /// 文本内容累积
@@ -56,6 +57,7 @@ pub struct BlockAccumulator {
     pub tool_arguments: String,
 }
 
+#[allow(dead_code)]
 impl BlockAccumulator {
     /// 添加文本
     pub fn add_text(&mut self, text: &str) {

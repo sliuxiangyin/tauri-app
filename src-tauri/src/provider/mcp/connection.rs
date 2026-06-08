@@ -149,6 +149,7 @@ pub struct McpStatus {
 }
 
 /// 心跳监控配置
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct HeartbeatConfig {
     /// 心跳间隔（STDIO 模式下必须）
@@ -231,6 +232,7 @@ impl McpConnection {
     }
 
     /// 创建连接管理器并禁用心跳（用于测试）
+    #[allow(dead_code)]
     pub fn new_no_heartbeat(
         name: String,
         config: TransportConfig,
@@ -242,6 +244,7 @@ impl McpConnection {
     }
 
     /// 创建连接管理器（从 Arc 上下文，用于心跳任务获取自身引用）
+    #[allow(dead_code)]
     fn from_arc(conn: Arc<McpConnection>) -> Self {
         Self {
             name: conn.name.clone(),
@@ -454,6 +457,7 @@ impl McpConnection {
     }
 
     /// 获取最后活跃时间戳
+    #[allow(dead_code)]
     fn get_last_active(&self) -> u64 {
         self.last_active.load(Ordering::Acquire)
     }

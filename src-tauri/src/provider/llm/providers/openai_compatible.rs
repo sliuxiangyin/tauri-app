@@ -39,6 +39,7 @@ impl OpenAiCompatible {
         self
     }
 
+    #[allow(dead_code)]
     fn model(&self) -> &str {
         &self.model
     }

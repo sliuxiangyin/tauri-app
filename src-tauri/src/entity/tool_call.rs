@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! 工具调用实体
 //! 对应 tool_calls 表，统一存储 conversation 和 plan 的工具调用记录
 

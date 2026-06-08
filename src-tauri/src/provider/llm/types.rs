@@ -140,6 +140,7 @@ impl ChatMessage {
     }
 
     /// 创建工具结果消息
+    #[allow(dead_code)]
     pub fn tool_result(call_id: impl Into<String>, name: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             role: Role::Tool,
@@ -199,6 +200,7 @@ pub struct IntentPlan {
     pub steps: Vec<PlanStep>,
 }
 
+#[allow(dead_code)]
 impl IntentPlan {
     /// 创建一个简单的非 Agent 计划
     pub fn simple() -> Self {
@@ -219,6 +221,7 @@ impl IntentPlan {
     }
 }
 
+#[allow(dead_code)]
 impl PlanStep {
     /// 创建新的计划步骤（默认确定性类型）
     pub fn new(order: u8, tool_name: impl Into<String>, step_goal: impl Into<String>) -> Self {

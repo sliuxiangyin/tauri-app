@@ -17,6 +17,7 @@ pub mod chat_model_service;
 pub mod chat_tools_service;
 pub mod db;
 pub mod llm_service;
+#[cfg(test)]
 pub mod llm_service_test;
 pub mod mcp_service;
 pub mod messages;
@@ -26,6 +27,7 @@ pub mod wechat_message;
 pub mod traits; // Trait 接口定义（依赖注入核心）
 
 // Re-export traits for convenience
+#[allow(unused_imports)]
 pub use traits::{DbAccessor, McpClient};
 
 // Re-export commonly used functions

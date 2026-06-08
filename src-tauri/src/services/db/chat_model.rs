@@ -6,7 +6,6 @@ use crate::entity::model_provider_config as mpc;
 use crate::entity::model_provider_model as mpm;
 use crate::provider::llm::types::ProviderConfigPayload;
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder};
-use std::sync::Arc;
 
 /// 第一个可用模型信息
 pub struct FirstEnabledModel {

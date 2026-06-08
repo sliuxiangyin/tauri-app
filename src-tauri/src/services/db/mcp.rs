@@ -182,6 +182,7 @@ pub async fn delete_mcp_by_name(db: &DatabaseConnection, name: &str) -> Result<(
 }
 
 /// 更新运行状态和错误信息
+#[allow(dead_code)]
 pub async fn update_mcp_operating_and_error(
     db: &DatabaseConnection,
     name: &str,

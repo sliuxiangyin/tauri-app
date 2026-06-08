@@ -23,10 +23,12 @@ use tracing::{debug, info, warn};
 /// Chat 工具服务
 ///
 /// 通过构造器注入 Cache 依赖
+#[allow(dead_code)]
 pub struct ChatToolsService {
     cache: Arc<Cache>,
 }
 
+#[allow(dead_code)]
 impl ChatToolsService {
     /// 创建新的服务实例
     pub fn new(cache: Arc<Cache>) -> Self {
@@ -223,6 +225,7 @@ pub fn remove_tools_config(
 }
 
 /// 批量获取多个 accountId + sessionId 的工具配置
+#[allow(dead_code)]
 pub fn batch_get_tools_config(
     cache: Arc<Cache>,
     requests: Vec<(String, String)>,
@@ -306,6 +309,7 @@ pub async fn get_enabled_tools_from_client<C: McpClient + ?Sized>(
 }
 
 /// 获取指定会话的可用工具列表（直接使用 McpManager）
+#[allow(dead_code)]
 pub async fn get_enabled_tools(
     mcp_manager: &crate::provider::mcp::McpManager,
     cache: &Cache,

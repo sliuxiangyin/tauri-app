@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! 计划执行实体
 //! 对应 plans 表，存储 Agent 模式的执行计划和结果
 

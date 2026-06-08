@@ -3,7 +3,6 @@
 //! 封装当前对话的内部状态，自动管理 message_id 和 block_order_num
 //! 提供面向对象的 API，直接写入数据库，无需事件总线
 
-use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -300,6 +299,7 @@ impl MessagesSession {
     }
 
     /// 标记工具执行错误
+    #[allow(dead_code)]
     pub async fn mark_tool_error(&self, _call_id: &str, error: Option<String>) {
         let order_num = self.block_order.load(Ordering::SeqCst);
 
@@ -368,11 +368,13 @@ impl MessagesSession {
     }
 
     /// 获取当前消息 ID
+    #[allow(dead_code)]
     pub fn current_message_id(&self) -> &str {
         &self.message_id
     }
 
     /// 获取下一块序号
+    #[allow(dead_code)]
     pub fn next_order_num(&self) -> i32 {
         self.block_order.load(Ordering::SeqCst)
     }
@@ -430,6 +432,7 @@ impl MessagesSession {
     }
 
     /// 获取当前 Plan ID
+    #[allow(dead_code)]
     pub fn current_plan_id(&self) -> Option<String> {
         self.plan_id.lock().unwrap().clone()
     }

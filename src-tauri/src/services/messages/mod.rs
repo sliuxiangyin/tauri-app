@@ -34,5 +34,6 @@ pub mod messages_event;
 pub mod messages_session;
 
 // Re-export commonly used types
+#[allow(unused_imports)]
 pub use messages_event::{BlockAccumulator, MessageStatus};
 pub use messages_session::MessagesSession;

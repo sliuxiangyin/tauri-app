@@ -33,6 +33,7 @@ pub struct OllamaProvider {
     model: String,
 }
 
+#[allow(dead_code)]
 impl OllamaProvider {
     pub fn new(client: reqwest::Client, base_url: String) -> Self {
         Self { client, base_url, model: String::new() }

@@ -8,12 +8,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+#[allow(unused_imports)]
 use async_trait::async_trait;
 use serde_json::Value;
 use tracing::{debug, error, info, warn};
 
+#[allow(unused_imports)]
 use crate::provider::llm::agent::event::{AgentResultSummary, AgentStreamEvent, StopReason};
-use crate::provider::llm::agent::runner::{AgentToolError, AgentToolExecutor};
+use crate::provider::llm::llm_tool_trait::{ToolExecError, ToolExecutor};
 use crate::provider::llm::agent::IntentAnalyzer;
 use crate::provider::llm::providers::LlmProvider;
 use crate::provider::llm::agent::types::{LlmDecision, StepAction, StepType};
@@ -70,7 +72,7 @@ pub enum PlanStopReason {
 #[derive(Debug)]
 pub enum PlanError {
     /// 工具执行错误
-    ToolError(AgentToolError),
+    ToolError(ToolExecError),
     /// 依赖的前置步骤不存在
     DependencyNotFound(u8),
     /// 工具未找到
@@ -92,8 +94,8 @@ impl std::fmt::Display for PlanError {
 
 impl std::error::Error for PlanError {}
 
-impl From<AgentToolError> for PlanError {
-    fn from(e: AgentToolError) -> Self {
+impl From<ToolExecError> for PlanError {
+    fn from(e: ToolExecError) -> Self {
         PlanError::ToolError(e)
     }
 }
@@ -124,7 +126,7 @@ impl StepContext {
 /// 采用混合模式：正常情况下按计划顺序执行；步骤失败时调用 LLM 分析原因并决定后续动作
 pub struct PlanExecutor {
     /// 工具执行器
-    tool_executor: Arc<dyn AgentToolExecutor>,
+    tool_executor: Arc<dyn ToolExecutor>,
     /// LLM Provider（用于步骤失败时的分析决策）
     llm_provider: Option<Arc<dyn LlmProvider>>,
     /// 事件回调（用于实时推送执行事件）
@@ -139,7 +141,7 @@ pub struct PlanExecutor {
 
 impl PlanExecutor {
     /// 创建新的计划执行器
-    pub fn new(tool_executor: Arc<dyn AgentToolExecutor>) -> Self {
+    pub fn new(tool_executor: Arc<dyn ToolExecutor>) -> Self {
         Self {
             tool_executor,
             llm_provider: None,
@@ -574,7 +576,7 @@ impl PlanExecutor {
     ) -> Result<String, PlanError> {
         // 如果没有配置 LLM Provider，无法执行探索性步骤
         let Some(llm) = &self.llm_provider else {
-            return Err(PlanError::ToolError(AgentToolError {
+            return Err(PlanError::ToolError(ToolExecError {
                 name: "exploratory".to_string(),
                 message: "Exploratory step requires LLM provider but none configured".to_string()
             }));
@@ -667,7 +669,7 @@ impl PlanExecutor {
         let analyzer = IntentAnalyzer::new(llm.clone());
         let response = analyzer.decision_raw(messages, vec![])
             .await
-            .map_err(|e| PlanError::ToolError(AgentToolError {
+            .map_err(|e| PlanError::ToolError(ToolExecError {
                 name: "exploratory".to_string(),
                 message: format!("Failed to decide tool: {}", e)
             }))?;
@@ -682,7 +684,7 @@ impl PlanExecutor {
         };
 
         let json: serde_json::Value = serde_json::from_str(json_str)
-            .map_err(|e| PlanError::ToolError(AgentToolError {
+            .map_err(|e| PlanError::ToolError(ToolExecError {
                 name: "exploratory".to_string(),
                 message: format!("Failed to parse LLM response: {}", e)
             }))?;
@@ -697,7 +699,7 @@ impl PlanExecutor {
             .unwrap_or(serde_json::json!({}));
 
         if tool_name.is_empty() {
-            return Err(PlanError::ToolError(AgentToolError {
+            return Err(PlanError::ToolError(ToolExecError {
                 name: "exploratory".to_string(),
                 message: "LLM did not return a tool name".to_string()
             }));
@@ -718,7 +720,7 @@ impl PlanExecutor {
         // 如果没有配置 LLM Provider，直接返回错误
         let Some(llm) = &self.llm_provider else {
             warn!("PlanExecutor: no LLM provider configured for failure analysis");
-            return Err(PlanError::ToolError(AgentToolError {
+            return Err(PlanError::ToolError(ToolExecError {
                 name: step.tool_name.clone(),
                 message: "LLM provider not available".to_string()
             }));
@@ -779,7 +781,7 @@ impl PlanExecutor {
         let analyzer = IntentAnalyzer::new(llm.clone());
         let response = analyzer.decision_raw(messages, vec![])
             .await
-            .map_err(|e| PlanError::ToolError(AgentToolError {
+            .map_err(|e| PlanError::ToolError(ToolExecError {
                 name: step.tool_name.clone(),
                 message: format!("LLM decision failed: {}", e)
             }))?;
@@ -801,7 +803,7 @@ impl PlanExecutor {
         };
 
         let json: serde_json::Value = serde_json::from_str(json_str)
-            .map_err(|e| PlanError::ToolError(AgentToolError {
+            .map_err(|e| PlanError::ToolError(ToolExecError {
                 name: "llm_decision".to_string(),
                 message: format!("Failed to parse LLM decision: {}", e)
             }))?;
@@ -812,7 +814,7 @@ impl PlanExecutor {
             .to_string();
 
         let action = json.get("action")
-            .ok_or_else(|| PlanError::ToolError(AgentToolError {
+            .ok_or_else(|| PlanError::ToolError(ToolExecError {
                 name: "llm_decision".to_string(),
                 message: "Missing 'action' field in LLM decision".to_string()
             }))?;
@@ -849,7 +851,7 @@ impl PlanExecutor {
             return Ok(LlmDecision::abort(reason));
         }
 
-        Err(PlanError::ToolError(AgentToolError {
+        Err(PlanError::ToolError(ToolExecError {
             name: "llm_decision".to_string(),
             message: "Invalid action type in LLM decision".to_string()
         }))

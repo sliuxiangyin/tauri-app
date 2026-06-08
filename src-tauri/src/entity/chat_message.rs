@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! 聊天消息实体
 //! 对应 messages 表
 

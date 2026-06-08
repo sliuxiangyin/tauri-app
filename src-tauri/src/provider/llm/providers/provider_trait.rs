@@ -7,7 +7,7 @@ use futures_util::Stream;
 
 use crate::provider::llm::error::LlmError;
 use crate::provider::llm::llm_event::LlmStreamEvent;
-use crate::provider::llm::types::{ChatMessage, ChatRequest, ToolDefinition};
+use crate::provider::llm::types::ChatRequest;
 
 pub type LlmStream = Pin<Box<dyn Stream<Item = Result<LlmStreamEvent, LlmError>> + Send>>;
 

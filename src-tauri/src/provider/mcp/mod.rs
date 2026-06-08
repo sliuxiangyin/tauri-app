@@ -74,6 +74,7 @@ use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
+#[allow(unused_imports)]
 pub use connection::{HeartbeatConfig, McpConnection, McpStatus, TransportConfig};
 pub use error::{McpError, McpResult};
 pub use event::{McpEvent, McpEventBus, SharedEventBus};

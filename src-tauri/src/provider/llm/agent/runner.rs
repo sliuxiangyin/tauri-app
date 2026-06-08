@@ -7,12 +7,10 @@
 //! - 注入 ToolResult 到消息历史
 //! - 循环直到结束条件
 
-use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -22,74 +20,9 @@ use crate::provider::llm::agent::config::AgentConfig;
 use crate::provider::llm::agent::event::{AgentResultSummary, AgentStreamEvent, StopReason};
 use crate::provider::llm::error::LlmError;
 use crate::provider::llm::llm_event::LlmStreamEvent;
+use crate::provider::llm::llm_tool_trait::{ToolExecError, ToolExecutor};
 use crate::provider::llm::providers::provider_trait::{LlmProvider, LlmStream};
 use crate::provider::llm::types::{ChatMessage, ChatRequest, FunctionCall, Role, ToolCallItem};
-
-/// 工具执行器 trait
-///
-/// 由外部（如 MCP Manager）实现，负责执行具体的工具调用。
-/// 
-/// 使用方式：
-/// 1. 实现 trait（适合复杂逻辑）
-/// 2. 使用 `FnToolExecutor` 闭包适配器（推荐，适合简单场景）
-#[async_trait]
-pub trait AgentToolExecutor: Send + Sync {
-    /// 执行工具调用
-    ///
-    /// 返回工具执行结果（JSON Value）。
-    async fn execute_tool(
-        &self,
-        call: FunctionCall,
-    ) -> Result<Value, AgentToolError>;
-}
-
-/// 闭包适配器：允许使用 async fn 闭包作为工具执行器
-///
-/// 使用示例：
-/// ```ignore
-/// let executor = FnToolExecutor::new(|call| async move {
-///     let (server, tool) = parse_mcp_tool_name(&call.name).unwrap();
-///     let params = CallToolRequestParams::new(call.name.clone(), call.arguments);
-///     let result = mcp_manager.call_tool(server, params).await?;
-///     Ok(result.content.into())
-/// });
-/// ```
-pub struct FnToolExecutor<F> {
-    executor: F,
-}
-
-impl<F> FnToolExecutor<F> {
-    /// 创建新的闭包执行器
-    pub fn new(executor: F) -> Self {
-        Self { executor }
-    }
-}
-
-#[async_trait]
-impl<F, Fut> AgentToolExecutor for FnToolExecutor<F>
-where
-    F: Fn(FunctionCall) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<Value, AgentToolError>> + Send + 'static,
-{
-    async fn execute_tool(&self, call: FunctionCall) -> Result<Value, AgentToolError> {
-        (self.executor)(call).await
-    }
-}
-
-/// 工具执行错误
-#[derive(Debug, Clone)]
-pub struct AgentToolError {
-    pub name: String,
-    pub message: String,
-}
-
-impl std::fmt::Display for AgentToolError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Tool '{}' execution failed: {}", self.name, self.message)
-    }
-}
-
-impl std::error::Error for AgentToolError {}
 
 /// Agent 事件回调类型
 ///
@@ -111,7 +44,7 @@ pub struct AgentRunner<'a> {
     /// LLM Provider（实际使用 Arc<dyn LlmProvider>）
     provider: Arc<dyn LlmProvider + 'a>,
     /// 工具执行器
-    tool_executor: Arc<dyn AgentToolExecutor>,
+    tool_executor: Arc<dyn ToolExecutor>,
     /// Agent 配置
     config: AgentConfig,
     /// 消息历史（累积）
@@ -142,7 +75,7 @@ impl<'a> AgentRunner<'a> {
     /// 创建 AgentRunner
     pub fn new(
         provider: Arc<dyn LlmProvider + 'a>,
-        tool_executor: Arc<dyn AgentToolExecutor>,
+        tool_executor: Arc<dyn ToolExecutor>,
         config: AgentConfig,
         initial_messages: Vec<ChatMessage>,
     ) -> Self {
@@ -456,7 +389,7 @@ impl<'a> AgentRunner<'a> {
     }
 
     /// 内部执行工具
-    async fn execute_tool_internal(&self, call: FunctionCall) -> Result<Value, AgentToolError> {
+    async fn execute_tool_internal(&self, call: FunctionCall) -> Result<Value, ToolExecError> {
         self.tool_executor.execute_tool(call).await
     }
 
@@ -574,7 +507,7 @@ pub enum AgentError {
     /// 流处理错误
     StreamError(LlmError),
     /// 工具执行错误
-    ToolError(AgentToolError),
+    ToolError(ToolExecError),
     /// 配置错误
     Config(String),
 }
@@ -598,8 +531,8 @@ impl From<LlmError> for AgentError {
     }
 }
 
-impl From<AgentToolError> for AgentError {
-    fn from(e: AgentToolError) -> Self {
+impl From<ToolExecError> for AgentError {
+    fn from(e: ToolExecError) -> Self {
         AgentError::ToolError(e)
     }
 }

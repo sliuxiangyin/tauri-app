@@ -54,6 +54,7 @@ pub struct AnthropicProvider {
     model: String,
 }
 
+#[allow(dead_code)]
 impl AnthropicProvider {
     pub fn new(client: reqwest::Client, api_key: String) -> Self {
         Self { client, api_key, model: String::new() }

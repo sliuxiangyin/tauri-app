@@ -23,9 +23,12 @@ pub mod block_sender;
 pub mod dispatcher;
 pub mod error;
 pub mod llm_event;
+pub mod llm_tool_trait;
+pub mod ordinary;
 pub mod providers;
 pub mod types;
 
+#[allow(unused_imports)]
 pub use agent::{
     AgentConfig, AgentEventCallback, AgentResultSummary, AgentRunner, AgentStreamEvent,
     parse_mcp_tool_name, PlanExecutor, PlanEventCallback, PlanResult, PlanStreamEvent, PlanStopReason,
@@ -33,8 +36,14 @@ pub use agent::{
     IntentAnalyzer, provider_helper,
 };
 pub use dispatcher::Provider;
+#[allow(unused_imports)]
 pub use llm_event::{
-    process_tool_batch, ToolExecutor, LlmChunkEnvelope, LlmStreamEvent, LlmStreamSender,
+    LlmChunkEnvelope, LlmStreamEvent, LlmStreamSender,
 };
+#[allow(unused_imports)]
+pub use llm_tool_trait::{ToolExecutor, ToolExecError, FnToolExecutor};
+#[allow(unused_imports)]
+pub use ordinary::{process_tool_batch, ProcessResult, ToolExecContext, parse_tool_arguments};
 pub use providers::LlmProvider;
+#[allow(unused_imports)]
 pub use types::{ChatMessage, ChatRequest, IntentPlan, PlanStep};

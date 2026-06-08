@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! 对话内容块实体（统一内容模型）
 //! 对应 conversations 表，存储消息的所有内容块：文本、思考、工具调用、工具结果
 //! 通过 block_type 区分类型，order_num 保证顺序

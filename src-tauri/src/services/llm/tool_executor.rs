@@ -7,8 +7,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
 
-use crate::provider::llm::agent::runner::{AgentToolError, AgentToolExecutor};
-use crate::provider::llm::llm_event::{parse_tool_arguments, ToolExecError, ToolExecutor};
+use crate::provider::llm::llm_tool_trait::{ToolExecError, ToolExecutor};
+use crate::provider::llm::ordinary::parse_tool_arguments;
 use crate::provider::llm::parse_mcp_tool_name;
 use crate::provider::llm::types::FunctionCall;
 use crate::services::traits::McpClient;
@@ -30,7 +30,7 @@ impl McpToolExecutor {
 
 #[async_trait]
 impl ToolExecutor for McpToolExecutor {
-    async fn execute(&self, call: FunctionCall) -> Result<Value, ToolExecError> {
+    async fn execute_tool(&self, call: FunctionCall) -> Result<Value, ToolExecError> {
         // 解析 MCP 工具名称（标准格式: "mcp__server__tool_name"）
         let (server_name, tool_name) = parse_mcp_tool_name(&call.name)
             .ok_or_else(|| ToolExecError {
@@ -70,24 +70,14 @@ impl ToolExecutor for McpToolExecutor {
     }
 }
 
-/// 实现 AgentToolExecutor 兼容 AgentRunner
-#[async_trait]
-impl AgentToolExecutor for McpToolExecutor {
-    async fn execute_tool(&self, call: FunctionCall) -> Result<Value, AgentToolError> {
-        self.execute(call).await.map_err(|e| AgentToolError {
-            name: e.name,
-            message: e.message,
-        })
-    }
-}
-
 /// 执行 MCP 工具调用（便捷函数）
 ///
 /// 解析工具名并调用 MCP Client。
+#[allow(dead_code)]
 pub async fn execute_mcp_tool(
     mcp_client: Arc<dyn McpClient>,
     call: FunctionCall,
 ) -> Result<Value, ToolExecError> {
     let executor = McpToolExecutor::new(mcp_client);
-    executor.execute(call).await
+    executor.execute_tool(call).await
 }
