@@ -298,18 +298,15 @@ pub enum ProviderConfigPayload {
 /// 用于区分 conversation 表中不同类型的 block：
 /// - Text: 普通文本内容
 /// - Thinking: 思考过程/推理链
-/// - ToolCall: 工具调用
-/// - ToolResult: 工具执行结果
+/// - Tool: 工具调用（包含输入参数和执行结果）
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockType {
     /// 普通文本内容
     Text,
     /// 思考过程/推理链
     Thinking,
-    /// 工具调用
-    ToolCall,
-    /// 工具执行结果
-    ToolResult,
+    /// 工具调用（统一类型，包含参数和结果）
+    Tool,
 }
 
 impl BlockType {
@@ -318,8 +315,7 @@ impl BlockType {
         match self {
             BlockType::Text => "text",
             BlockType::Thinking => "thinking",
-            BlockType::ToolCall => "tool_call",
-            BlockType::ToolResult => "tool_result",
+            BlockType::Tool => "tool",
         }
     }
 
@@ -328,8 +324,7 @@ impl BlockType {
         match s.to_lowercase().as_str() {
             "text" => BlockType::Text,
             "thinking" => BlockType::Thinking,
-            "tool_call" => BlockType::ToolCall,
-            "tool_result" => BlockType::ToolResult,
+            "tool" => BlockType::Tool,
             _ => BlockType::Text,
         }
     }

@@ -12,6 +12,8 @@
 //!   - `openai_compatible.rs`：OpenAI 兼容实现
 //!   - `anthropic.rs`：Anthropic 实现
 //!   - `ollama.rs`：Ollama 实现
+//! - `prompts/`：提示词模板子模块
+//!   - `intent_prompt.rs`：意图分析提示词与解析函数
 //! - `agent/`：Agent 循环子模块
 //!   - `config.rs`：AgentConfig
 //!   - `event.rs`：AgentStreamEvent
@@ -25,6 +27,7 @@ pub mod error;
 pub mod llm_event;
 pub mod llm_tool_trait;
 pub mod ordinary;
+pub mod prompts;
 pub mod providers;
 pub mod types;
 

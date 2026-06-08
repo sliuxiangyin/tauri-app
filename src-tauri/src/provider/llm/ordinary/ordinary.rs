@@ -133,7 +133,7 @@ pub async fn process_tool_batch(
                         }
                     }
                     LlmStreamEvent::ToolCallStart { index, id, name } => {
-                        block_sender.send("tool_call");
+                        block_sender.send("tool");
                         // 转发 ToolCallStart 给前端
                         if let Some(ref s) = sender {
                             let _ = s.send(LlmStreamEvent::ToolCallStart {
@@ -165,15 +165,24 @@ pub async fn process_tool_batch(
                             let _ = s.send(LlmStreamEvent::ToolCallDelta { index, arguments });
                         }
                     }
-                    LlmStreamEvent::ToolCallDone { index, arguments } => {
+                    LlmStreamEvent::ToolCallDone { index: idx, arguments } => {
+                        // 忽略 ToolCallDone 中的 arguments（可能是空对象）
+                        // 实际参数已通过 ToolCallDelta 累积到 current_call.arguments
+                        // 标记参数已完整
                         if let Some(ref mut tc) = current_call {
-                            tc.arguments.push_str(&arguments.to_string());
+                            // 将累积的参数字符串解析为 JSON Value，然后重新转为字符串
+                            // 确保参数格式正确
+                            if !tc.arguments.is_empty() {
+                                if let Ok(parsed) = serde_json::from_str::<Value>(&tc.arguments) {
+                                    tc.arguments = parsed.to_string();
+                                }
+                            }
                         }
                         // 转发 ToolCallDone 给前端
                         if let Some(ref s) = sender {
                             let _ = s.send(LlmStreamEvent::ToolCallDone {
-                                index,
-                                arguments: arguments.clone(),
+                                index: idx,
+                                arguments,
                             });
                         }
                     }
@@ -199,7 +208,7 @@ pub async fn process_tool_batch(
     tracing::info!("[LLM] Tool pending_calls: {:?}", pending_calls);
     // 执行工具调用并填充结果
     let mut tool_calls: Vec<ToolCallRecord> = Vec::new();
-    block_sender.send("tool_result");
+    block_sender.send("tool");  // 统一为 tool 类型
     if let Some(ref exec) = executor {
         for mut call in pending_calls {
             // 执行工具

@@ -215,62 +215,23 @@ impl MessagesSession {
         BlockInfo::new(BlockType::Thinking.as_str(), order_num)
     }
 
-    /// 添加工具调用记录（包含 call_id, name, arguments）
+    /// 添加工具调用记录（统一模型：包含调用信息 + 执行结果）
     ///
     /// 在 process_tool_batch 返回 tool_calls 后，由调用方统一入库。
-    pub async fn add_tool_call(&self, record: &ToolCallRecord) -> BlockInfo {
-        let order_num = self.block_order.fetch_add(1, Ordering::SeqCst);
-
-        let payload = crate::entity::conversations::CreateConversationPayload {
-            mid: self.message_id.clone(),
-            block_type: BlockType::ToolCall.as_str().to_string(),
-            order_num,
-            content: None,
-            thinking: None,
-            tool_name: Some(record.name.clone()),
-            tool_arguments: Some(record.arguments.to_string()),
-            tool_output: None,
-            tool_status: Some("pending".to_string()),
-            source: "chat".to_string(),
-            source_id: None,
-            step_index: None,
-            content_summary: None,
-            tool_duration_ms: None,
-            tool_error: None,
-            extends: None,
-            attachments: None,
-            metadata: None,
-        };
-
-        if let Err(e) = message::save_conversation(&*self.db, payload).await {
-            tracing::error!("[MessagesSession] 保存工具调用块失败: {}", e);
-        }
-
-        tracing::debug!(
-            "[MessagesSession] 保存工具调用: call_id={}, name={}",
-            record.call_id,
-            record.name
-        );
-
-        BlockInfo::new(BlockType::ToolCall.as_str(), order_num)
-    }
-
-    /// 添加工具执行结果记录
-    ///
-    /// 在 process_tool_batch 返回 tool_calls 后，由调用方统一入库。
-    pub async fn add_tool_result(&self, record: &ToolCallRecord) -> BlockInfo {
+    /// block_type 统一为 "tool"，包含完整的参数和结果。
+    pub async fn add_tool(&self, record: &ToolCallRecord) -> BlockInfo {
         let order_num = self.block_order.fetch_add(1, Ordering::SeqCst);
 
         let tool_status = if record.success { "success" } else { "failed" };
 
         let payload = crate::entity::conversations::CreateConversationPayload {
             mid: self.message_id.clone(),
-            block_type: BlockType::ToolResult.as_str().to_string(),
+            block_type: BlockType::Tool.as_str().to_string(),
             order_num,
             content: None,
             thinking: None,
             tool_name: Some(record.name.clone()),
-            tool_arguments: None,
+            tool_arguments: Some(record.arguments.to_string()),
             tool_output: Some(record.result.as_ref().map(|v| v.to_string()).unwrap_or_default()),
             tool_status: Some(tool_status.to_string()),
             source: "chat".to_string(),
@@ -285,17 +246,17 @@ impl MessagesSession {
         };
 
         if let Err(e) = message::save_conversation(&*self.db, payload).await {
-            tracing::error!("[MessagesSession] 保存工具结果块失败: {}", e);
+            tracing::error!("[MessagesSession] 保存工具块失败: {}", e);
         }
 
         tracing::debug!(
-            "[MessagesSession] 保存工具结果: call_id={}, name={}, success={}",
+            "[MessagesSession] 保存工具: call_id={}, name={}, success={}",
             record.call_id,
             record.name,
             record.success
         );
 
-        BlockInfo::new(BlockType::ToolResult.as_str(), order_num)
+        BlockInfo::new(BlockType::Tool.as_str(), order_num)
     }
 
     /// 标记工具执行错误
@@ -305,7 +266,7 @@ impl MessagesSession {
 
         let payload = crate::entity::conversations::CreateConversationPayload {
             mid: self.message_id.clone(),
-            block_type: BlockType::ToolResult.as_str().to_string(),
+            block_type: BlockType::Tool.as_str().to_string(),
             order_num,
             content: None,
             thinking: None,

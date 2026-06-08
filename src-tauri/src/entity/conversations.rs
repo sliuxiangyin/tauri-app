@@ -45,7 +45,7 @@ pub struct Model {
     #[sea_orm(column_name = "mid")]
     pub mid: String,
 
-    /// 内容块类型：text / thinking / tool_call / tool_result
+    /// 内容块类型：text / thinking / tool
     #[sea_orm(column_name = "block_type")]
     pub block_type: String,
 

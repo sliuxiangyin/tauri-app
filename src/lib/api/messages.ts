@@ -8,7 +8,7 @@ import { invoke } from '@tauri-apps/api/core'
 export interface ContentBlockDto {
   id: string
   mid: string
-  block_type: 'text' | 'thinking' | 'tool_call' | 'tool_result'
+  block_type: 'text' | 'thinking' | 'tool'
   order_num: number
   source: string
   source_id?: string

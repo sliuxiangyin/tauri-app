@@ -13,8 +13,7 @@ import {
 } from "@/components/ai-elements/message";
 import { PlanStepsList } from "@/components/ai-elements/plan-steps-list";
 import {
-  ToolCallBlock,
-  ToolResultBlock,
+  ToolInvocationBlock,
   ThinkingBlock,
 } from "@/components/ai-elements/tool-call-block";
 import { ChatBox } from "@/components/chat-page/chat-box";
@@ -68,10 +67,8 @@ function renderContentItems(content: ContentItem[]): React.ReactNode {
           );
         case "thinking":
           return <ThinkingBlock key={index} block={block} />;
-        case "tool_call":
-          return <ToolCallBlock key={index} block={block} />;
-        case "tool_result":
-          return <ToolResultBlock key={index} block={block} />;
+        case "tool":
+          return <ToolInvocationBlock key={index} block={block} />;
         default:
           return (
             <p key={index} className="whitespace-pre-wrap text-pretty">
@@ -330,21 +327,14 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
               thinking: block.content,
             } satisfies ContentBlockDto,
           };
-        case "tool_call":
+        case "tool":
           return {
             type: "block",
             data: {
               ...baseData,
+              block_type: "tool",
               tool_name: block.tool_name,
               tool_arguments: block.tool_arguments,
-            } satisfies ContentBlockDto,
-          };
-        case "tool_result":
-          return {
-            type: "block",
-            data: {
-              ...baseData,
-              tool_name: block.tool_name,
               tool_output: block.tool_result,
               tool_status: block.tool_status,
             } satisfies ContentBlockDto,

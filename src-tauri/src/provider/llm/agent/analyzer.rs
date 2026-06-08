@@ -17,7 +17,7 @@ use tracing::{debug, warn};
 
 use crate::provider::llm::error::LlmError;
 use crate::provider::llm::llm_event::LlmStreamEvent;
-use crate::provider::llm::providers::intent_prompt::{
+use crate::provider::llm::prompts::intent_prompt::{
     build_intent_user_message, extract_user_request, intent_system_prompt, parse_intent_response,
 };
 use crate::provider::llm::providers::provider_trait::{LlmProvider, LlmStream};
