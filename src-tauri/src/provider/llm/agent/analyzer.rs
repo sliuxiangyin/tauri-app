@@ -166,7 +166,10 @@ impl IntentAnalyzer {
     /// 获取模型（支持外部传入或默认模型）
     fn get_model(&self) -> Result<String, LlmError> {
         if self.model.is_empty() {
-            Err(LlmError::Config("Model not set for intent analysis".to_string()))
+            self.provider
+                .default_model()
+                .map(|m| m.to_string())
+                .ok_or_else(|| LlmError::Config("Model not set for intent analysis".to_string()))
         } else {
             Ok(self.model.clone())
         }

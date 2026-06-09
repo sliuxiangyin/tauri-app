@@ -1,6 +1,6 @@
 #!/bin/bash
 # LLM Service 测试脚本
-# 用于运行 llm_service_test.rs 中的测试
+# 用于运行 llm_service_test.rs 和 plan_executor.rs 中的测试
 
 # 设置 LLM 配置
 # ============================================
@@ -28,6 +28,7 @@ echo ""
 TEST=""
 IGNORED=""
 REAL=""
+PLAN=""
 ALL=""
 
 while [[ $# -gt 0 ]]; do
@@ -42,6 +43,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -Real|--real)
             REAL="true"
+            shift
+            ;;
+        -Plan|--plan)
+            PLAN="true"
             shift
             ;;
         -All|--all)
@@ -64,10 +69,13 @@ elif [[ -n "$IGNORED" ]]; then
     TEST_CMD="cargo test --release --lib -- --ignored --nocapture"
 elif [[ -n "$REAL" ]]; then
     TEST_CMD="cargo test --release --lib -- --ignored --nocapture test_intent_real_with_llm"
+elif [[ -n "$PLAN" ]]; then
+    # 运行 PlanExecutor 真实服务测试
+    TEST_CMD="cargo test --release --lib -- --ignored --nocapture test_plan_executor"
 elif [[ -n "$ALL" ]]; then
     TEST_CMD="cargo test --release --lib -- --ignored --nocapture"
 else
-    TEST_CMD="cargo test --release --lib -- --nocapture llm_service_test"
+    TEST_CMD="cargo test --release --lib -- --nocapture plan_executor"
 fi
 
 echo "运行命令: $TEST_CMD"

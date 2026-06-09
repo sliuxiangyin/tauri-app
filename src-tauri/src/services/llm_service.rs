@@ -326,28 +326,12 @@ impl LlmService {
         let _plan_info = session.save_plan(&intent_plan).await;
 
         content_type_sender.block("text");
-        // TODO: 临时中断，方便前端测试 Plan 渲染 —— 恢复 Agent 执行时删除此段
-        {
-            let reply = format!(
-                "**Agent 模式（已暂停）**\n\n{}\n\n共 {} 个步骤，暂不执行。",
-                intent_plan.reasoning,
-                intent_plan.steps.len()
-            );
-
-            let _ = stream_sender.send(LlmStreamEvent::TextDelta {
-                text: reply.clone(),
-            });
-
-            let block_info = session.add_text_block(&reply).await;
-
-            return Ok(reply);
-        }
 
         // 3. 执行 Agent 循环
         let executor: Arc<dyn ToolExecutor> = Arc::new(McpToolExecutor::new(mcp));
         let tool_names: Vec<String> = tools.iter().map(|t| t.function.name.clone()).collect();
 
-        let plan_executor = PlanExecutor::new(executor)
+        let plan_executor: PlanExecutor = PlanExecutor::new(executor)
             .with_available_tools(tool_names)
             .with_llm_provider(provider)
             .with_max_retries(2);

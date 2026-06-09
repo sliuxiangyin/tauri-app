@@ -243,4 +243,8 @@ impl LlmProvider for AnthropicProvider {
 
         Ok(Box::pin(s))
     }
+
+    fn default_model(&self) -> Option<&str> {
+        if self.model.is_empty() { None } else { Some(&self.model) }
+    }
 }

@@ -573,6 +573,8 @@ impl crate::provider::llm::providers::LlmProvider for MockLlmProvider {
         });
         Ok(Box::pin(stream))
     }
+
+    fn default_model(&self) -> Option<&str> { None }
 }
 
 /// 测试：简单问答（不需要工具）

@@ -6,7 +6,10 @@
 //! - `analyzer.rs`：意图分析器（统一意图分析和决策能力）
 //! - `config.rs`：AgentConfig
 //! - `event.rs`：AgentStreamEvent
-//! - `plan_executor.rs`：计划执行器
+//! - `plan_executor/`：计划执行器（目录形式）
+//!   - `mod.rs`：PlanExecutor 主结构、execute_plan、StepContext、事件类型
+//!   - `step_executor.rs`：确定性步骤执行
+//!   - `exploratory_step.rs`：探索性步骤执行（LLM 动态选工具）
 //! - `runner.rs`：AgentRunner
 
 pub mod analyzer;

@@ -1,25 +1,35 @@
 //! 计划执行器
 //!
 //! 按步骤顺序执行 IntentPlan，支持依赖检查和结果验证
-//! 
+//!
 //! 采用混合模式：正常情况下按计划顺序执行；步骤失败时调用 LLM 分析原因并决定后续动作
+//!
+//! ## 模块结构
+//! - `step_executor.rs`：确定性步骤执行（调用工具）
+//! - `exploratory_step.rs`：探索性步骤执行（LLM 动态选工具）
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-#[allow(unused_imports)]
-use async_trait::async_trait;
 use serde_json::Value;
 use tracing::{debug, error, info, warn};
 
-#[allow(unused_imports)]
-use crate::provider::llm::agent::event::{AgentResultSummary, AgentStreamEvent, StopReason};
 use crate::provider::llm::llm_tool_trait::{ToolExecError, ToolExecutor};
 use crate::provider::llm::agent::IntentAnalyzer;
 use crate::provider::llm::providers::LlmProvider;
 use crate::provider::llm::agent::types::{LlmDecision, StepAction, StepType};
 use crate::provider::llm::types::{ChatMessage, FunctionCall, IntentPlan, PlanStep, Role};
+
+pub(crate) mod exploratory_step;
+pub(crate) mod step_executor;
+
+use exploratory_step::execute_exploratory_step;
+use step_executor::execute_step;
+
+// =============================================================================
+// 类型定义
+// =============================================================================
 
 /// 计划执行结果
 #[derive(Debug, Clone)]
@@ -85,7 +95,9 @@ impl std::fmt::Display for PlanError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PlanError::ToolError(e) => write!(f, "Tool error: {}", e),
-            PlanError::DependencyNotFound(step) => write!(f, "Dependency step {} not found", step),
+            PlanError::DependencyNotFound(step) => {
+                write!(f, "Dependency step {} not found", step)
+            }
             PlanError::ToolNotFound(name) => write!(f, "Tool not found: {}", name),
             PlanError::Aborted => write!(f, "Execution aborted by user"),
         }
@@ -107,7 +119,9 @@ struct StepContext {
 
 impl StepContext {
     fn new() -> Self {
-        Self { results: Vec::new() }
+        Self {
+            results: Vec::new(),
+        }
     }
 
     /// 获取指定步骤的输出
@@ -119,10 +133,14 @@ impl StepContext {
     }
 }
 
+// =============================================================================
+// PlanExecutor
+// =============================================================================
+
 /// 计划执行器
 ///
 /// 按步骤顺序执行计划，支持依赖检查和结果验证
-/// 
+///
 /// 采用混合模式：正常情况下按计划顺序执行；步骤失败时调用 LLM 分析原因并决定后续动作
 pub struct PlanExecutor {
     /// 工具执行器
@@ -267,8 +285,10 @@ impl PlanExecutor {
                 break;
             }
 
-            // 检查工具是否存在
-            if !self.tool_exists(&step.tool_name) {
+            // 检查工具是否存在（探索性步骤由 LLM 动态决定工具，跳过此检查）
+            if step.step_type != StepType::Exploratory
+                && !self.tool_exists(&step.tool_name)
+            {
                 error!(
                     "PlanExecutor: tool '{}' not found (step {})",
                     step.tool_name, step.order
@@ -316,12 +336,19 @@ impl PlanExecutor {
             let start_time = Instant::now();
             let result = match step.step_type {
                 StepType::Deterministic => {
-                    // 确定性步骤：直接执行
-                    self.execute_step(step, &context).await
+                    tracing::debug!("确定性步骤：直接执行 {:?}", step);
+                    execute_step(&self.tool_executor, step, &context).await
                 }
                 StepType::Exploratory => {
-                    // 探索性步骤：调用 LLM 决定工具和参数
-                    self.execute_exploratory_step(step, &context).await
+                    tracing::debug!("探索性步骤：调用 LLM 决定工具 {:?}", step);
+                    execute_exploratory_step(
+                        &self.llm_provider,
+                        self.tool_executor.clone(),
+                        &self.available_tools,
+                        step,
+                        &context,
+                    )
+                    .await
                 }
             };
             let duration_ms = start_time.elapsed().as_millis() as u64;
@@ -358,10 +385,7 @@ impl PlanExecutor {
                     });
                 }
                 Err(e) => {
-                    error!(
-                        "PlanExecutor: step {} failed: {}",
-                        step.order, e
-                    );
+                    error!("PlanExecutor: step {} failed: {}", step.order, e);
 
                     // 混合模式：尝试让 LLM 分析并决定后续动作
                     let decision = self.handle_step_failure(step, &e, &context).await;
@@ -376,7 +400,8 @@ impl PlanExecutor {
                             match action {
                                 StepAction::Retry { new_parameters } => {
                                     // 重试步骤
-                                    let retry_params = new_parameters.unwrap_or_else(|| step.parameters.clone());
+                                    let retry_params =
+                                        new_parameters.unwrap_or_else(|| step.parameters.clone());
                                     let retry_step = PlanStep {
                                         order: step.order,
                                         step_type: step.step_type,
@@ -386,7 +411,13 @@ impl PlanExecutor {
                                         expected_output: step.expected_output.clone(),
                                         depends_on: step.depends_on,
                                     };
-                                    match self.execute_step(&retry_step, &context).await {
+                                    match execute_step(
+                                        &self.tool_executor,
+                                        &retry_step,
+                                        &context,
+                                    )
+                                    .await
+                                    {
                                         Ok(output) => {
                                             let step_result = StepResult {
                                                 order: step.order,
@@ -416,7 +447,10 @@ impl PlanExecutor {
                                 }
                                 StepAction::Skip { reason } => {
                                     // 跳过当前步骤
-                                    info!("PlanExecutor: skipping step {} - {}", step.order, reason);
+                                    info!(
+                                        "PlanExecutor: skipping step {} - {}",
+                                        step.order, reason
+                                    );
                                     let step_result = StepResult {
                                         order: step.order,
                                         tool_name: step.tool_name.clone(),
@@ -428,7 +462,11 @@ impl PlanExecutor {
                                     context.results.push(step_result);
                                     continue;
                                 }
-                                StepAction::ChangeTool { tool_name, parameters, reason: _ } => {
+                                StepAction::ChangeTool {
+                                    tool_name,
+                                    parameters,
+                                    reason: _,
+                                } => {
                                     // 更换工具
                                     let new_step = PlanStep {
                                         order: step.order,
@@ -439,7 +477,13 @@ impl PlanExecutor {
                                         expected_output: step.expected_output.clone(),
                                         depends_on: step.depends_on,
                                     };
-                                    match self.execute_step(&new_step, &context).await {
+                                    match execute_step(
+                                        &self.tool_executor,
+                                        &new_step,
+                                        &context,
+                                    )
+                                    .await
+                                    {
                                         Ok(output) => {
                                             let step_result = StepResult {
                                                 order: step.order,
@@ -475,7 +519,9 @@ impl PlanExecutor {
                         }
                         Err(_) => {
                             // 无法获取 LLM 决策，降级为直接失败
-                            warn!("PlanExecutor: LLM decision unavailable, marking as failure");
+                            warn!(
+                                "PlanExecutor: LLM decision unavailable, marking as failure"
+                            );
                         }
                     }
 
@@ -519,197 +565,8 @@ impl PlanExecutor {
         })
     }
 
-    /// 执行单个步骤
-    async fn execute_step(
-        &self,
-        step: &PlanStep,
-        context: &StepContext,
-    ) -> Result<String, PlanError> {
-        // 构建函数调用参数
-        // 1. 首先使用 step.parameters（LLM 生成的参数）
-        let mut arguments = if step.parameters.is_object() {
-            step.parameters.as_object().unwrap().clone()
-        } else {
-            serde_json::Map::new()
-        };
-
-        // 2. 如果有依赖，添加前置步骤的输出（作为 __prev_step_output）
-        if let Some(dep_order) = step.depends_on {
-            if let Some(dep_output) = context.get_output(dep_order) {
-                arguments.insert(
-                    "__prev_step_output".to_string(),
-                    Value::String(dep_output.to_string()),
-                );
-            }
-        }
-
-        let call = FunctionCall {
-            id: format!("plan_step_{}", step.order),
-            name: step.tool_name.clone(),
-            arguments: Value::Object(arguments),
-        };
-
-        // 执行工具调用
-        let result = self
-            .tool_executor
-            .execute_tool(call)
-            .await
-            .map_err(PlanError::from)?;
-
-        // 转换为字符串
-        let output = if result.is_string() {
-            result.as_str().unwrap_or("").to_string()
-        } else {
-            serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string())
-        };
-
-        Ok(output)
-    }
-
-    /// 执行探索性步骤
-    /// 
-    /// 探索性步骤需要在执行时根据上下文决定工具和参数
-    async fn execute_exploratory_step(
-        &self,
-        step: &PlanStep,
-        context: &StepContext,
-    ) -> Result<String, PlanError> {
-        // 如果没有配置 LLM Provider，无法执行探索性步骤
-        let Some(llm) = &self.llm_provider else {
-            return Err(PlanError::ToolError(ToolExecError {
-                name: "exploratory".to_string(),
-                message: "Exploratory step requires LLM provider but none configured".to_string()
-            }));
-        };
-
-        // 构建上下文信息
-        let context_info = self.build_exploratory_context(step, context)?;
-
-        // 调用 LLM 决定工具和参数
-        let (tool_name, parameters) = self.decide_tool_for_exploratory(llm, &context_info).await?;
-
-        // 使用 LLM 决定的信息执行步骤
-        let step_with_decision = PlanStep {
-            order: step.order,
-            step_type: StepType::Deterministic,
-            tool_name,
-            parameters,
-            step_goal: step.step_goal.clone(),
-            expected_output: step.expected_output.clone(),
-            depends_on: step.depends_on,
-        };
-
-        self.execute_step(&step_with_decision, context).await
-    }
-
-    /// 构建探索性步骤的上下文信息
-    fn build_exploratory_context(
-        &self,
-        step: &PlanStep,
-        context: &StepContext,
-    ) -> Result<String, PlanError> {
-        let mut info = String::new();
-
-        // 添加步骤目标
-        info.push_str(&format!("【步骤目标】\n{}\n\n", step.step_goal));
-
-        // 添加前置步骤输出（如果有依赖）
-        if let Some(dep_order) = step.depends_on {
-            if let Some(dep_output) = context.get_output(dep_order) {
-                info.push_str(&format!("【前置步骤输出】\n{}\n\n", dep_output));
-            }
-        }
-
-        // 添加历史结果
-        if !context.results.is_empty() {
-            let history = context.results.iter()
-                .map(|r| format!(
-                    "步骤{}: {} - {}",
-                    r.order, r.tool_name,
-                    if r.success { "成功" } else { "失败" }
-                ))
-                .collect::<Vec<_>>()
-                .join("\n");
-            info.push_str(&format!("【已执行步骤】\n{}\n\n", history));
-        }
-
-        // 添加可用工具列表
-        if !self.available_tools.is_empty() {
-            info.push_str(&format!("【可用工具】\n{}\n\n", self.available_tools.join(", ")));
-        }
-
-        Ok(info)
-    }
-
-    /// 调用 LLM 决定探索性步骤的工具和参数
-    async fn decide_tool_for_exploratory(
-        &self,
-        llm: &Arc<dyn LlmProvider>,
-        context_info: &str,
-    ) -> Result<(String, serde_json::Value), PlanError> {
-        let user_message = format!(
-            r#"【探索性步骤：需要决定工具和参数】
-{}
-
-请根据上述信息，从可用工具中选择最合适的工具并决定参数。
-
-要求：
-1. 只返回 JSON，不要其他文字
-2. 格式：{{"tool_name": "工具名", "parameters": {{}}}}
-3. 只选择一个工具
-"#,
-            context_info
-        );
-
-        let messages = vec![
-            ChatMessage::new(Role::System, "你是一个智能助手，负责在探索性步骤中决定使用哪个工具以及参数。请只返回 JSON 格式的回答。"),
-            ChatMessage::new(Role::User, &user_message),
-        ];
-
-        let analyzer = IntentAnalyzer::new(llm.clone());
-        let response = analyzer.decision_raw(messages, vec![])
-            .await
-            .map_err(|e| PlanError::ToolError(ToolExecError {
-                name: "exploratory".to_string(),
-                message: format!("Failed to decide tool: {}", e)
-            }))?;
-
-        // 解析 LLM 响应
-        let json_str = if response.contains('{') {
-            let start = response.find('{').unwrap();
-            let end = response.rfind('}').unwrap_or(response.len() - 1);
-            &response[start..=end]
-        } else {
-            &response
-        };
-
-        let json: serde_json::Value = serde_json::from_str(json_str)
-            .map_err(|e| PlanError::ToolError(ToolExecError {
-                name: "exploratory".to_string(),
-                message: format!("Failed to parse LLM response: {}", e)
-            }))?;
-
-        let tool_name = json.get("tool_name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        let parameters = json.get("parameters")
-            .cloned()
-            .unwrap_or(serde_json::json!({}));
-
-        if tool_name.is_empty() {
-            return Err(PlanError::ToolError(ToolExecError {
-                name: "exploratory".to_string(),
-                message: "LLM did not return a tool name".to_string()
-            }));
-        }
-
-        Ok((tool_name, parameters))
-    }
-
     /// 处理步骤失败（混合模式核心）
-    /// 
+    ///
     /// 当步骤执行失败时，调用 LLM 分析原因并生成决策
     async fn handle_step_failure(
         &self,
@@ -722,7 +579,7 @@ impl PlanExecutor {
             warn!("PlanExecutor: no LLM provider configured for failure analysis");
             return Err(PlanError::ToolError(ToolExecError {
                 name: step.tool_name.clone(),
-                message: "LLM provider not available".to_string()
+                message: "LLM provider not available".to_string(),
             }));
         };
 
@@ -736,12 +593,21 @@ impl PlanExecutor {
         );
 
         // 构建历史信息
-        let history = context.results.iter()
-            .map(|r| format!(
-                "步骤{} ({}): {}",
-                r.order, r.tool_name,
-                if r.success { format!("成功，长度={}", r.output.len()) } else { r.output.clone() }
-            ))
+        let history = context
+            .results
+            .iter()
+            .map(|r| {
+                format!(
+                    "步骤{} ({}): {}",
+                    r.order,
+                    r.tool_name,
+                    if r.success {
+                        format!("成功，长度={}", r.output.len())
+                    } else {
+                        r.output.clone()
+                    }
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -773,17 +639,21 @@ impl PlanExecutor {
         );
 
         let messages = vec![
-            ChatMessage::new(Role::System, "你是一个智能助手，负责在工具执行失败时分析原因并决定后续动作。请只返回 JSON，不要其他文字。"),
+            ChatMessage::new(
+                Role::System,
+                "你是一个智能助手，负责在工具执行失败时分析原因并决定后续动作。请只返回 JSON，不要其他文字。",
+            ),
             ChatMessage::new(Role::User, &user_message),
         ];
 
         // 调用 LLM 获取决策
         let analyzer = IntentAnalyzer::new(llm.clone());
-        let response = analyzer.decision_raw(messages, vec![])
+        let response = analyzer
+            .decision_raw(messages, vec![])
             .await
             .map_err(|e| PlanError::ToolError(ToolExecError {
                 name: step.tool_name.clone(),
-                message: format!("LLM decision failed: {}", e)
+                message: format!("LLM decision failed: {}", e),
             }))?;
 
         // 解析 LLM 返回的决策
@@ -802,49 +672,55 @@ impl PlanExecutor {
             response
         };
 
-        let json: serde_json::Value = serde_json::from_str(json_str)
+        let json: Value = serde_json::from_str(json_str)
             .map_err(|e| PlanError::ToolError(ToolExecError {
                 name: "llm_decision".to_string(),
-                message: format!("Failed to parse LLM decision: {}", e)
+                message: format!("Failed to parse LLM decision: {}", e),
             }))?;
 
-        let analysis = json.get("analysis")
+        let analysis = json
+            .get("analysis")
             .and_then(|v| v.as_str())
             .unwrap_or("无分析")
             .to_string();
 
-        let action = json.get("action")
+        let action = json
+            .get("action")
             .ok_or_else(|| PlanError::ToolError(ToolExecError {
                 name: "llm_decision".to_string(),
-                message: "Missing 'action' field in LLM decision".to_string()
+                message: "Missing 'action' field in LLM decision".to_string(),
             }))?;
 
         // 解析动作类型
         if let Some(retry) = action.get("retry") {
-            let new_parameters = retry.get("new_parameters")
-                .map(|v| v.clone());
+            let new_parameters = retry.get("new_parameters").map(|v| v.clone());
             return Ok(LlmDecision::retry(analysis, new_parameters));
         } else if let Some(skip) = action.get("skip") {
-            let reason = skip.get("reason")
+            let reason = skip
+                .get("reason")
                 .and_then(|v| v.as_str())
                 .unwrap_or("未知原因")
                 .to_string();
             return Ok(LlmDecision::skip(reason));
         } else if let Some(change) = action.get("change_tool") {
-            let tool_name = change.get("tool_name")
+            let tool_name = change
+                .get("tool_name")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let parameters = change.get("parameters")
+            let parameters = change
+                .get("parameters")
                 .cloned()
                 .unwrap_or(serde_json::json!({}));
-            let reason = change.get("reason")
+            let reason = change
+                .get("reason")
                 .and_then(|v| v.as_str())
                 .unwrap_or("工具不可用")
                 .to_string();
             return Ok(LlmDecision::change_tool(tool_name, parameters, reason));
         } else if let Some(abort) = action.get("abort") {
-            let reason = abort.get("reason")
+            let reason = abort
+                .get("reason")
                 .and_then(|v| v.as_str())
                 .unwrap_or("无法解决")
                 .to_string();
@@ -853,10 +729,14 @@ impl PlanExecutor {
 
         Err(PlanError::ToolError(ToolExecError {
             name: "llm_decision".to_string(),
-            message: "Invalid action type in LLM decision".to_string()
+            message: "Invalid action type in LLM decision".to_string(),
         }))
     }
 }
+
+// =============================================================================
+// 事件类型（公开 API）
+// =============================================================================
 
 /// 计划事件回调类型
 pub type PlanEventCallback = Arc<dyn Fn(PlanStreamEvent) + Send + Sync>;
@@ -897,41 +777,4 @@ pub enum PlanStreamEvent {
         final_reply_length: usize,
         stop_reason: PlanStopReason,
     },
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_plan_step_builder() {
-        let step = PlanStep::new(1, "mcp__server__tool", "执行某个操作")
-            .with_expected_output("操作成功")
-            .with_dependency(0);
-
-        assert_eq!(step.order, 1);
-        assert_eq!(step.tool_name, "mcp__server__tool");
-        assert_eq!(step.step_goal, "执行某个操作");
-        assert_eq!(step.expected_output, Some("操作成功".to_string()));
-        assert_eq!(step.depends_on, Some(0));
-    }
-
-    #[test]
-    fn test_intent_plan_simple() {
-        let plan = IntentPlan::simple();
-        assert!(!plan.need_agent);
-        assert!(plan.steps.is_empty());
-    }
-
-    #[test]
-    fn test_intent_plan_agent() {
-        let steps = vec![
-            PlanStep::new(1, "mcp__search__search", "搜索信息"),
-            PlanStep::new(2, "mcp__browser__goto", "打开结果"),
-        ];
-        let plan = IntentPlan::agent(steps, "用户需要多步操作");
-
-        assert!(plan.need_agent);
-        assert_eq!(plan.steps.len(), 2);
-    }
 }

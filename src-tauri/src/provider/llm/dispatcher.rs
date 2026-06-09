@@ -58,4 +58,12 @@ impl LlmProvider for Provider {
             Self::Ollama(p) => p.stream_chat(req, abort_flag).await,
         }
     }
+
+    fn default_model(&self) -> Option<&str> {
+        match self {
+            Self::OpenAiCompatible(p) => p.default_model(),
+            Self::Anthropic(p) => p.default_model(),
+            Self::Ollama(p) => p.default_model(),
+        }
+    }
 }

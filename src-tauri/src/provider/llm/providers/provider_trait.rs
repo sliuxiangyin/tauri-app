@@ -31,4 +31,7 @@ pub trait LlmProvider: Send + Sync {
         req: ChatRequest,
         abort_flag: Arc<AtomicBool>,
     ) -> Result<LlmStream, LlmError>;
+
+    /// 获取默认模型名称（如果没有显式设置 model 时 fallback）
+    fn default_model(&self) -> Option<&str> { None }
 }

@@ -17,8 +17,7 @@
 //!
 //! | | 旧表（chat_messages） | 新表（messages） |
 //! |---|---|---|
-//! | 内容存储 | 内嵌 content/thinking/tool_calls | 拆分到 conversations 表 |
-//! | 工具调用 | tool_calls/tool_call_id 字段 | 通过 conversations block_type 表达 |
+//! | 内容存储 | 内嵌所有字段 | 拆分到 conversations 表（统一内容块） |
 //! | 扩展性 | 扁平结构，难以扩展 | 内容块模型，灵活扩展 |
 //!
 //! ## 字段说明

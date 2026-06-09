@@ -106,7 +106,6 @@ impl OpenAiCompatible {
 impl LlmProvider for OpenAiCompatible {
     async fn send_message(&self, req: ChatRequest) -> Result<String, LlmError> {
         let messages = Self::convert_messages(&req.messages)?;
-        println!("[DEBUG] send_message: model={}, msg_count={}", req.model, messages.len());
 
         let mut args = CreateChatCompletionRequestArgs::default();
         args.model(&req.model)
@@ -117,13 +116,11 @@ impl LlmProvider for OpenAiCompatible {
         }
         // 注入工具
         if let Some(tools) = &req.tools {
-            println!("[DEBUG] send_message: {} tools to send", tools.len());
             let provider_tools = Self::convert_tools_to_provider(tools)?;
             args.tools(provider_tools);
         }
         let request = args.build().map_err(|e| LlmError::Config(e.to_string()))?;
 
-        println!("[DEBUG] send_message: calling API with 30s timeout...");
         // 发送请求，设置 30 秒超时
         let response = match timeout(Duration::from_secs(30), self.client.chat().create(request)).await {
             Ok(Ok(resp)) => resp,
@@ -136,7 +133,6 @@ impl LlmProvider for OpenAiCompatible {
                 return Err(LlmError::Timeout);
             }
         };
-        println!("[DEBUG] send_message: response received");
 
         let content = response
             .choices
@@ -147,7 +143,6 @@ impl LlmProvider for OpenAiCompatible {
         if content.is_empty() {
             return Err(LlmError::EmptyResponse);
         }
-        println!("[DEBUG] send_message: content length={}", content.len());
         Ok(content)
     }
 
@@ -264,6 +259,10 @@ impl LlmProvider for OpenAiCompatible {
         };
 
         Ok(Box::pin(s))
+    }
+
+    fn default_model(&self) -> Option<&str> {
+        if self.model.is_empty() { None } else { Some(&self.model) }
     }
 }
 

@@ -7,7 +7,6 @@ DB_PATH = r"C:\Users\woddp\AppData\Roaming\com.woddp.tauri-app\app.db"
 
 # 需要清除的表列表（按依赖顺序：先删子表，再删主表）
 TABLES_TO_DROP = [
-    "tool_calls",      # 已废弃，工具调用合并到 conversations
     "conversations",   # 内容块表
     "plans",           # 计划表
     "messages",        # 消息索引表
