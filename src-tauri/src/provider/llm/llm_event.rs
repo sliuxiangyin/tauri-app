@@ -119,19 +119,38 @@ pub enum LlmStreamEvent {
     /// 用于前端区分不同 block 的边界，便于渲染和交互。
     /// 当 LLM 开始输出新的内容块（文本/思考/工具调用）时发送。
     BlockStart {
-        /// Block 类型：text, thinking, tool_call, tool_result
+        /// Block 类型：text, thinking, tool
         block_type: String,
         /// 块序号（自动递增）
         order_num: i32,
     },
 
     // ========== Agent Plan 相关 ==========
-    /// Plan 步骤列表（Agent 模式进入时推送，供前端渲染步骤卡片）
+    /// Plan 开始标记（纯事件通知，不含内容）
+    ///
+    /// 与 BlockStart 平级，前端收到后构造 `{ type: 'plan', data: PlanDto }` 并
+    /// 按 `order_num` 插入统一内容序列，保证流式 / DB 加载两路数据结构一致。
+    PlanStart {
+        /// Plan 记录 ID
+        plan_id: String,
+        /// Block 序号（与 BlockStart 共享序号空间）
+        order_num: i32,
+    },
     PlanSteps {
+        plan_id: String,
         /// LLM 判断理由
         reasoning: String,
         /// 执行步骤列表
         steps: Vec<crate::provider::llm::types::PlanStep>,
+    },
+    /// Plan 执行结果更新（Agent 循环结束后推送）
+    PlanUpdate {
+        /// Plan 记录 ID
+        plan_id: String,
+        /// 各步骤执行结果（JSON 字符串）
+        step_results: Option<String>,
+        /// 停止原因
+        stop_reason: String,
     },
 }
 

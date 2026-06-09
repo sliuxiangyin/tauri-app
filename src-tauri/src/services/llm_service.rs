@@ -18,14 +18,14 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use crate::provider::cache::Cache;
+use crate::provider::llm::content_type_sender::ContentTypeSender;
+use crate::provider::llm::llm_tool_trait::ToolExecutor;
 use crate::provider::llm::{
     types::{ChatMessage as LlmChatMessage, ChatRequest, Role},
-    IntentAnalyzer, LlmProvider, LlmStreamSender, LlmStreamEvent, PlanExecutor, Provider,
+    IntentAnalyzer, LlmProvider, LlmStreamEvent, LlmStreamSender, PlanExecutor, Provider,
 };
 use crate::services::chat_model_service::ChatModelService;
 use crate::services::chat_tools_service;
-use crate::provider::llm::block_sender::BlockSender;
-use crate::provider::llm::llm_tool_trait::ToolExecutor;
 use crate::services::llm::tool_executor::McpToolExecutor;
 use crate::services::messages::MessagesSession;
 use crate::services::messages_service::MessagesService;
@@ -217,7 +217,7 @@ impl LlmService {
             self.execute_simple_mode(
                 &mut session,
                 provider,
-                 mcp,
+                mcp,
                 model_id,
                 full_messages,
                 tools_ref,
@@ -253,7 +253,7 @@ impl LlmService {
         &self,
         session: &mut MessagesSession,
         provider: Arc<dyn LlmProvider>,
-           mcp: Arc<dyn McpClient>,
+        mcp: Arc<dyn McpClient>,
         model_id: String,
         messages: Vec<ChatMessage>,
         tools: Option<Vec<crate::provider::llm::types::ToolDefinition>>,
@@ -273,9 +273,13 @@ impl LlmService {
             .await
             .map_err(|e| e.to_string())?;
         let executor: Arc<dyn ToolExecutor> = Arc::new(McpToolExecutor::new(mcp.clone()));
-        let result = crate::provider::llm::ordinary::process_tool_batch(stream, Some(executor), stream_sender.as_ref())
-            .await
-            .map_err(|e| e.to_string())?;
+        let result = crate::provider::llm::ordinary::process_tool_batch(
+            stream,
+            Some(executor),
+            stream_sender.as_ref(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
         // 保存文本块
         session.add_text_block(&result.text).await;
@@ -306,29 +310,22 @@ impl LlmService {
             intent_plan.steps.len()
         );
 
-        let stream_sender = stream_sender
-            .ok_or_else(|| "stream_sender is required for agent mode".to_string())?;
-        let mut block_sender = BlockSender::new(Some(stream_sender.clone()));
-        // let mut block_sender = BlockSender::new(stream_sender.cloned());
-        // block_sender.send("text");
-        // 1. 保存 Plan
-        let plan_id = match session.save_plan(&intent_plan).await {
-            Ok(id) => {
-                tracing::info!("[LlmService] 保存 Plan 成功: plan_id={}", id);
-                Some(id)
-            }
-            Err(e) => {
-                tracing::error!("[LlmService] 保存 Plan 失败: {}", e);
-                None
-            }
-        };
-      
+        let stream_sender =
+            stream_sender.ok_or_else(|| "stream_sender is required for agent mode".to_string())?;
+        let mut content_type_sender = ContentTypeSender::new(Some(stream_sender.clone()));
+        // 1. 推送 PlanStart 事件给前端（plan_id 由 ContentTypeSender 生成，用于关联后续 PlanUpdate）
+        let (plan_id, _plan_order_num) = content_type_sender.plan();
+        tracing::info!("[LlmService] PlanStart 已推送: plan_id={}", plan_id);
         // 2. 推送 Plan 步骤列表给前端
         let _ = stream_sender.send(crate::provider::llm::llm_event::LlmStreamEvent::PlanSteps {
+            plan_id: plan_id.clone(),
             reasoning: intent_plan.reasoning.clone(),
             steps: intent_plan.steps.clone(),
         });
+        // TODO: 后续 save_plan 改用 plan_id 关联
+        let _plan_info = session.save_plan(&intent_plan).await;
 
+        content_type_sender.block("text");
         // TODO: 临时中断，方便前端测试 Plan 渲染 —— 恢复 Agent 执行时删除此段
         {
             let reply = format!(
@@ -337,16 +334,12 @@ impl LlmService {
                 intent_plan.steps.len()
             );
 
-            let _ = stream_sender.send(crate::provider::llm::llm_event::LlmStreamEvent::TextDelta {
+            let _ = stream_sender.send(LlmStreamEvent::TextDelta {
                 text: reply.clone(),
             });
 
             let block_info = session.add_text_block(&reply).await;
-            // 发送 BlockStart 事件给前端
-            let _ = stream_sender.send(LlmStreamEvent::BlockStart {
-                block_type: block_info.block_type,
-                order_num: block_info.order_num,
-            });
+
             return Ok(reply);
         }
 
@@ -365,7 +358,7 @@ impl LlmService {
             .map_err(|e| e.to_string());
 
         // 3. 更新 Plan 结果
-        if let Some(plan_id) = &plan_id {
+        {
             match &plan_result {
                 Ok(pr) => {
                     tracing::info!(
@@ -394,7 +387,26 @@ impl LlmService {
             }
         }
 
-        // 4. 写入 text block 并发送 BlockStart 事件
+        // 4. 推送 PlanUpdate 事件给前端（更新步骤执行结果）
+        {
+            let (step_results_json, stop_reason) = match &plan_result {
+                Ok(pr) => {
+                    let stop_reason_str = plan_stop_reason_to_str(&pr.stop_reason);
+                    (
+                        serde_json::to_string(&pr.step_results).ok(),
+                        stop_reason_str,
+                    )
+                }
+                Err(_) => (None, "failed".to_string()),
+            };
+            let _ = stream_sender.send(LlmStreamEvent::PlanUpdate {
+                plan_id: plan_id.clone(),
+                step_results: step_results_json,
+                stop_reason,
+            });
+        }
+
+        // 5. 写入 text block 并发送 BlockStart 事件
         match &plan_result {
             Ok(pr) => {
                 let block_info = session.add_text_block(&pr.final_reply).await;

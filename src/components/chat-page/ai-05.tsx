@@ -33,6 +33,7 @@ import {
   clearMessages,
   type ContentBlockDto,
   type ContentItem,
+  type PlanDto,
 } from "@/lib/api/messages";
 import {
   getChatModel,
@@ -77,7 +78,25 @@ function renderContentItems(content: ContentItem[]): React.ReactNode {
           );
       }
     }
-    // Plan 类型暂不渲染
+    if (item.type === "plan") {
+      const plan = item.data;
+      // 将 steps JSON 字符串解析为 PlanStepDto[]
+      let steps: import("@/lib/api/tauri-llm").PlanStepDto[] = [];
+      if (plan.steps) {
+        try {
+          steps = JSON.parse(plan.steps);
+        } catch {
+          // steps 解析失败则不渲染
+        }
+      }
+      return (
+        <PlanStepsList
+          key={index}
+          steps={steps}
+          reasoning={plan.reasoning}
+        />
+      );
+    }
     return null;
   });
 }
@@ -93,29 +112,6 @@ interface DemoMessage {
   role: "user" | "assistant";
   /** 按 order_num 排序的内容块数组 */
   content: ContentItem[];
-  /** Plan 步骤（用于展示） */
-  planSteps?: import("@/lib/api/tauri-llm").PlanStepDto[];
-  planReasoning?: string;
-}
-
-/** 流式过程中的临时块 */
-interface StreamingBlock {
-  block_type: string;
-  order_num: number;
-  content: string;
-  thinking?: string;
-  tool_name?: string;
-  tool_arguments?: string;
-  tool_result?: string;
-  tool_status?: string;
-}
-
-/** 工具调用缓冲区（用于聚合增量参数） */
-interface ToolCallBuffer {
-  index: number;
-  id: string;
-  name: string;
-  arguments: string;
 }
 
 const INITIAL_MESSAGES: DemoMessage[] = [
@@ -283,10 +279,6 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
 
     const assistantId = `assistant-${nanoid()}`;
 
-    // 流式处理状态
-    const streamingBlocks: StreamingBlock[] = [];
-    const toolBuffer: Map<string, ToolCallBuffer> = new Map();
-
     // 创建 assistant 占位消息
     setMessages((prev) => [
       ...prev,
@@ -297,70 +289,8 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
       },
     ]);
 
-    // 辅助函数：将 StreamingBlock 转换为 ContentItem
-    const blockToContentItem = (block: StreamingBlock, mid: string): ContentItem => {
-      const baseData = {
-        id: `${mid}-block-${block.order_num}`,
-        mid,
-        block_type: block.block_type as ContentBlockDto["block_type"],
-        order_num: block.order_num,
-        source: "chat",
-        extends: "",
-        metadata: "",
-        created_at: new Date().toISOString(),
-      };
-
-      switch (block.block_type) {
-        case "text":
-          return {
-            type: "block",
-            data: {
-              ...baseData,
-              content: block.content,
-            } satisfies ContentBlockDto,
-          };
-        case "thinking":
-          return {
-            type: "block",
-            data: {
-              ...baseData,
-              thinking: block.content,
-            } satisfies ContentBlockDto,
-          };
-        case "tool":
-          return {
-            type: "block",
-            data: {
-              ...baseData,
-              block_type: "tool",
-              tool_name: block.tool_name,
-              tool_arguments: block.tool_arguments,
-              tool_output: block.tool_result,
-              tool_status: block.tool_status,
-            } satisfies ContentBlockDto,
-          };
-        default:
-          return {
-            type: "block",
-            data: {
-              ...baseData,
-              content: block.content,
-            } satisfies ContentBlockDto,
-          };
-      }
-    };
-
-    // 更新 assistant 消息的 content
-    const updateAssistantContent = (blocks: StreamingBlock[]) => {
-      const contentItems: ContentItem[] = blocks.map((b) =>
-        blockToContentItem(b, assistantId)
-      );
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantId ? { ...m, content: contentItems } : m
-        )
-      );
-    };
+    // 工具参数缓冲区（用于聚合增量参数）
+    const toolArgumentsBuffer = new Map<string, string>();
 
     try {
       await streamLlmChat({
@@ -370,97 +300,337 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
         onChunk: (payload) => {
           console.log("onChunk:", payload);
           switch (payload.kind) {
+            // ========================================
+            // block_start: 立即插入 ContentItem（根据 block_type 初始化对应字段）
+            // ========================================
             case "block_start":
-              // 创建新块
-              streamingBlocks.push({
-                block_type: payload.block_type,
-                order_num: payload.order_num,
-                content: "",
-              });
+              {
+                const baseData = {
+                  id: `${assistantId}-block-${payload.order_num}`,
+                  mid: assistantId,
+                  block_type: payload.block_type as ContentBlockDto["block_type"],
+                  order_num: payload.order_num,
+                  source: "chat",
+                  extends: "",
+                  metadata: "",
+                  created_at: new Date().toISOString(),
+                };
+
+                let blockData: ContentBlockDto;
+                switch (payload.block_type) {
+                  case "text":
+                    blockData = { ...baseData, content: "" } as ContentBlockDto;
+                    break;
+                  case "thinking":
+                    blockData = { ...baseData, thinking: "" } as ContentBlockDto;
+                    break;
+                  case "tool":
+                    blockData = {
+                      ...baseData,
+                      tool_name: "",
+                      tool_arguments: "",
+                      tool_status: "pending",
+                    } as ContentBlockDto;
+                    break;
+                  default:
+                    blockData = { ...baseData, content: "" } as ContentBlockDto;
+                }
+
+                const blockItem: ContentItem = { type: "block", data: blockData };
+                setMessages((prev) =>
+                  prev.map((m) => {
+                    if (m.id !== assistantId) return m;
+                    return { ...m, content: [...m.content, blockItem] };
+                  })
+                );
+              }
               break;
 
+            // ========================================
+            // text_delta: 累加到最近插入的 text block
+            // ========================================
             case "text_delta":
-              // 累加到当前 text block
-              if (streamingBlocks.length > 0) {
-                const current = streamingBlocks[streamingBlocks.length - 1];
-                if (current.block_type === "text") {
-                  current.content += payload.text;
-                  updateAssistantContent(streamingBlocks);
-                }
-              }
-              break;
-
-            case "reasoning_delta":
-              // 累加到当前 thinking block
-              if (streamingBlocks.length > 0) {
-                const current = streamingBlocks[streamingBlocks.length - 1];
-                if (current.block_type === "thinking") {
-                  current.content += payload.text;
-                } else {
-                  // 如果当前不是 thinking，创建新的 thinking block
-                  streamingBlocks.push({
-                    block_type: "thinking",
-                    order_num: streamingBlocks.length,
-                    content: payload.text,
-                  });
-                }
-                updateAssistantContent(streamingBlocks);
-              }
-              break;
-
-            case "tool_call_start":
-              // 记录到 toolBuffer（使用 index 作为 key）
-              toolBuffer.set(String(payload.index), {
-                index: payload.index,
-                id: payload.id,
-                name: payload.name,
-                arguments: "",
-              });
-              break;
-
-            case "tool_call_delta":
-              // 累加参数（使用 index 作为 key）
-              const tb = toolBuffer.get(String(payload.index));
-              if (tb) {
-                tb.arguments += payload.arguments;
-              }
-              break;
-
-            case "tool_call_done":
-              // 合并到当前 block（使用 index 作为 key）
-              const completed = toolBuffer.get(String(payload.index));
-              if (completed && streamingBlocks.length > 0) {
-                const current = streamingBlocks[streamingBlocks.length - 1];
-                current.tool_name = completed.name;
-                current.tool_arguments = completed.arguments;
-                updateAssistantContent(streamingBlocks);
-              }
-              toolBuffer.delete(String(payload.index));
-              break;
-
-            case "tool_result":
-              // 更新当前 block
-              if (streamingBlocks.length > 0) {
-                const current = streamingBlocks[streamingBlocks.length - 1];
-                current.tool_name = payload.name;
-                current.tool_result = JSON.stringify(payload.result);
-                current.tool_status = payload.success ? "success" : "failed";
-                updateAssistantContent(streamingBlocks);
-              }
-              break;
-
-            case "plan_steps":
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === assistantId
-                    ? {
-                        ...m,
-                        planSteps: payload.steps,
-                        planReasoning: payload.reasoning,
+              {
+                setMessages((prev) =>
+                  prev.map((m) => {
+                    if (m.id !== assistantId) return m;
+                    // 找到最近插入的 text block 的索引
+                    let lastTextIndex = -1;
+                    for (let i = m.content.length - 1; i >= 0; i--) {
+                      const item = m.content[i];
+                      if (item.type === "block" && (item.data as ContentBlockDto).block_type === "text") {
+                        lastTextIndex = i;
+                        break;
                       }
-                    : m
-                )
-              );
+                    }
+                    if (lastTextIndex === -1) return m;
+                    const newContent = m.content.map((item, i): ContentItem => {
+                      if (i === lastTextIndex && item.type === "block") {
+                        const blockData = item.data as ContentBlockDto;
+                        return {
+                          type: "block",
+                          data: {
+                            ...blockData,
+                            content: (blockData.content ?? "") + payload.text,
+                          },
+                        };
+                      }
+                      return item;
+                    });
+                    return { ...m, content: newContent };
+                  })
+                );
+              }
+              break;
+
+            // ========================================
+            // reasoning_delta: 累加到最近插入的 thinking block
+            // ========================================
+            case "reasoning_delta":
+              {
+                setMessages((prev) =>
+                  prev.map((m) => {
+                    if (m.id !== assistantId) return m;
+                    // 找到最近插入的 thinking block 的索引
+                    let lastThinkingIndex = -1;
+                    for (let i = m.content.length - 1; i >= 0; i--) {
+                      const item = m.content[i];
+                      if (item.type === "block" && (item.data as ContentBlockDto).block_type === "thinking") {
+                        lastThinkingIndex = i;
+                        break;
+                      }
+                    }
+                    if (lastThinkingIndex === -1) return m;
+                    const newContent = m.content.map((item, i): ContentItem => {
+                      if (i === lastThinkingIndex && item.type === "block") {
+                        const blockData = item.data as ContentBlockDto;
+                        return {
+                          type: "block",
+                          data: {
+                            ...blockData,
+                            thinking: (blockData.thinking ?? "") + payload.text,
+                          },
+                        };
+                      }
+                      return item;
+                    });
+                    return { ...m, content: newContent };
+                  })
+                );
+              }
+              break;
+
+            // ========================================
+            // tool_call_start: 复用 block_start 已插入的 tool block，补充 tool_name
+            // ========================================
+            case "tool_call_start":
+              {
+                // 不插入新 block，而是更新 block_start 已创建的 tool block 的 tool_name
+                setMessages((prev) =>
+                  prev.map((m) => {
+                    if (m.id !== assistantId) return m;
+                    // 找到 order_num 匹配 payload.index 的 tool block，或者最近的空 tool block
+                    let targetIndex = -1;
+                    for (let i = m.content.length - 1; i >= 0; i--) {
+                      const item = m.content[i];
+                      if (
+                        item.type === "block" &&
+                        (item.data as ContentBlockDto).block_type === "tool" &&
+                        !(item.data as ContentBlockDto).tool_name
+                      ) {
+                        targetIndex = i;
+                        break;
+                      }
+                    }
+                    if (targetIndex === -1) return m;
+                    const newContent = m.content.map((item, i): ContentItem => {
+                      if (i === targetIndex && item.type === "block") {
+                        return {
+                          type: "block",
+                          data: {
+                            ...item.data,
+                            tool_name: payload.name,
+                          },
+                        };
+                      }
+                      return item;
+                    });
+                    return { ...m, content: newContent };
+                  })
+                );
+              }
+              break;
+
+            // ========================================
+            // tool_call_delta: 累加参数（暂存，不更新 UI）
+            // ========================================
+            case "tool_call_delta":
+              {
+                // 参数暂存到本地 Map，后续 tool_call_done 时一起更新
+                // 注意：这里暂不更新 UI，因为 block 数据在 tool_call_start 时已插入
+                const tb = toolArgumentsBuffer.get(String(payload.index));
+                if (tb !== undefined) {
+                  toolArgumentsBuffer.set(String(payload.index), tb + payload.arguments);
+                } else {
+                  toolArgumentsBuffer.set(String(payload.index), payload.arguments);
+                }
+              }
+              break;
+
+            // ========================================
+            // tool_call_done: 合并参数到最近插入的 tool block
+            // ========================================
+            case "tool_call_done":
+              {
+                const args = toolArgumentsBuffer.get(String(payload.index)) ?? "";
+                toolArgumentsBuffer.delete(String(payload.index));
+
+                setMessages((prev) =>
+                  prev.map((m) => {
+                    if (m.id !== assistantId) return m;
+                    // 找到最近插入的 tool block 的索引
+                    let lastToolIndex = -1;
+                    for (let i = m.content.length - 1; i >= 0; i--) {
+                      const item = m.content[i];
+                      if (item.type === "block" && (item.data as ContentBlockDto).block_type === "tool") {
+                        lastToolIndex = i;
+                        break;
+                      }
+                    }
+                    if (lastToolIndex === -1) return m;
+                    const newContent = m.content.map((item, i): ContentItem => {
+                      if (i === lastToolIndex && item.type === "block") {
+                        const blockData = item.data as ContentBlockDto;
+                        const argsStr = typeof args === "string" ? args : JSON.stringify(args);
+                        return {
+                          type: "block",
+                          data: {
+                            ...blockData,
+                            tool_arguments: argsStr,
+                          },
+                        };
+                      }
+                      return item;
+                    });
+                    return { ...m, content: newContent };
+                  })
+                );
+              }
+              break;
+
+            // ========================================
+            // tool_result: 更新 tool block 的执行结果
+            // ========================================
+            case "tool_result":
+              {
+                setMessages((prev) =>
+                  prev.map((m) => {
+                    if (m.id !== assistantId) return m;
+                    const newContent = m.content.map((item) => {
+                      if (
+                        item.type === "block" &&
+                        (item.data as ContentBlockDto).tool_name === payload.name
+                      ) {
+                        return {
+                          ...item,
+                          data: {
+                            ...item.data,
+                            tool_output: JSON.stringify(payload.result),
+                            tool_status: payload.success ? "success" : "failed",
+                          } satisfies ContentBlockDto,
+                        };
+                      }
+                      return item;
+                    });
+                    return { ...m, content: newContent };
+                  })
+                );
+              }
+              break;
+
+            // ========================================
+            // plan_start: 立即插入 plan ContentItem
+            // ========================================
+            case "plan_start":
+              {
+                const planItem: ContentItem = {
+                  type: "plan",
+                  data: {
+                    id: payload.plan_id,
+                    mid: assistantId,
+                    need_agent: "1",
+                    order_num: payload.order_num,
+                    reasoning: "",
+                    steps: "[]",
+                    step_results: undefined,
+                    stop_reason: undefined,
+                    completed_at: undefined,
+                    created_at: new Date().toISOString(),
+                  } satisfies PlanDto,
+                };
+                setMessages((prev) =>
+                  prev.map((m) => {
+                    if (m.id !== assistantId) return m;
+                    const newContent = [...m.content, planItem];
+                    return { ...m, content: newContent };
+                  })
+                );
+              }
+              break;
+
+            // ========================================
+            // plan_steps: 通过 plan_id 更新 reasoning 和 steps
+            // ========================================
+            case "plan_steps":
+              {
+                setMessages((prev) =>
+                  prev.map((m) => {
+                    if (m.id !== assistantId) return m;
+                    const newContent = m.content.map((item) => {
+                      if (item.type === "plan" && item.data.id === payload.plan_id) {
+                        return {
+                          ...item,
+                          data: {
+                            ...item.data,
+                            reasoning: payload.reasoning,
+                            steps: JSON.stringify(payload.steps),
+                          } satisfies PlanDto,
+                        };
+                      }
+                      return item;
+                    });
+                    return { ...m, content: newContent };
+                  })
+                );
+              }
+              break;
+
+            // ========================================
+            // plan_update: 通过 plan_id 更新 step_results 和 stop_reason
+            // ========================================
+            case "plan_update":
+              {
+                setMessages((prev) =>
+                  prev.map((m) => {
+                    if (m.id !== assistantId) return m;
+                    const newContent = m.content.map((item) => {
+                      if (item.type === "plan" && item.data.id === payload.plan_id) {
+                        return {
+                          ...item,
+                          data: {
+                            ...item.data,
+                            step_results:
+                              payload.step_results ?? item.data.step_results,
+                            stop_reason: payload.stop_reason,
+                          } satisfies PlanDto,
+                        };
+                      }
+                      return item;
+                    });
+                    return { ...m, content: newContent };
+                  })
+                );
+              }
               break;
 
             case "done":
@@ -479,13 +649,27 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
         },
         onStreamError: (payload) => {
           console.log("onStreamError:", payload);
-          // 添加错误 block
-          streamingBlocks.push({
-            block_type: "text",
-            order_num: streamingBlocks.length,
-            content: `**错误**\n\n${payload.message}`,
-          });
-          updateAssistantContent(streamingBlocks);
+          // 插入错误 block
+          const errorItem: ContentItem = {
+            type: "block",
+            data: {
+              id: `error-${Date.now()}`,
+              mid: assistantId,
+              block_type: "text",
+              order_num: 9999,
+              source: "system",
+              content: `**错误**\n\n${payload.message}`,
+              extends: "",
+              metadata: "",
+              created_at: new Date().toISOString(),
+            } satisfies ContentBlockDto,
+          };
+          setMessages((prev) =>
+            prev.map((m) => {
+              if (m.id !== assistantId) return m;
+              return { ...m, content: [...m.content, errorItem] };
+            })
+          );
         },
         onStreamEnd: async () => {
           // LLM 流结束，后端已入库，前端只需更新显示
@@ -493,12 +677,27 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      streamingBlocks.push({
-        block_type: "text",
-        order_num: streamingBlocks.length,
-        content: `**调用失败**\n\n${msg}`,
-      });
-      updateAssistantContent(streamingBlocks);
+      // 插入错误 block
+      const errorItem: ContentItem = {
+        type: "block",
+        data: {
+          id: `error-${Date.now()}`,
+          mid: assistantId,
+          block_type: "text",
+          order_num: 9999,
+          source: "system",
+          content: `**调用失败**\n\n${msg}`,
+          extends: "",
+          metadata: "",
+          created_at: new Date().toISOString(),
+        } satisfies ContentBlockDto,
+      };
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id !== assistantId) return m;
+          return { ...m, content: [...m.content, errorItem] };
+        })
+      );
     }
   };
 
@@ -603,15 +802,8 @@ export default function Ai05({ account, messages: storeMessages }: Ai05Props) {
                       message.role === "assistant" && "max-w-prose"
                     )}
                   >
-                    {/* 渲染 content 数组 */}
+                    {/* 渲染 content 数组（blocks + plan 统一渲染） */}
                     {renderContentItems(message.content)}
-                    {/* Plan 步骤列表 */}
-                    {message.planSteps && message.planSteps.length > 0 && (
-                      <PlanStepsList
-                        steps={message.planSteps}
-                        reasoning={message.planReasoning}
-                      />
-                    )}
                   </MessageContent>
                 </Message>
               ))}

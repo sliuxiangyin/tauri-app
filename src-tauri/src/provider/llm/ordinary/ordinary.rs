@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::provider::llm::llm_tool_trait::ToolExecutor;
-use crate::provider::llm::block_sender::BlockSender;
+use crate::provider::llm::content_type_sender::ContentTypeSender;
 use crate::provider::llm::error::LlmError;
 use crate::provider::llm::llm_event::LlmStreamEvent;
 use crate::provider::llm::types::ToolCallRecord;
@@ -118,14 +118,14 @@ pub async fn process_tool_batch(
     let mut final_reply = String::new();
 
     futures_util::pin_mut!(stream);
-    let mut block_sender = BlockSender::new(sender.cloned());
-    block_sender.send("text");
+    let mut content_type_sender = ContentTypeSender::new(sender.cloned());
 
     while let Some(item) = stream.next().await {
         match item {
             Ok(event) => {
                 match event {
                     LlmStreamEvent::TextDelta { text } => {
+                       content_type_sender.block("text");
                         final_reply.push_str(&text);
                         // 转发 TextDelta 给前端
                         if let Some(ref s) = sender {
@@ -133,7 +133,7 @@ pub async fn process_tool_batch(
                         }
                     }
                     LlmStreamEvent::ToolCallStart { index, id, name } => {
-                        block_sender.send("tool");
+                        content_type_sender.block("tool");
                         // 转发 ToolCallStart 给前端
                         if let Some(ref s) = sender {
                             let _ = s.send(LlmStreamEvent::ToolCallStart {
@@ -208,9 +208,10 @@ pub async fn process_tool_batch(
     tracing::info!("[LLM] Tool pending_calls: {:?}", pending_calls);
     // 执行工具调用并填充结果
     let mut tool_calls: Vec<ToolCallRecord> = Vec::new();
-    block_sender.send("tool");  // 统一为 tool 类型
+    
     if let Some(ref exec) = executor {
         for mut call in pending_calls {
+             content_type_sender.block("tool");  // 统一为 tool 类型
             // 执行工具
             match exec.execute_tool(call.clone().into()).await {
                 Ok(result) => {

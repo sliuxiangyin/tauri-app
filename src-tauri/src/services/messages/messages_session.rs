@@ -347,7 +347,8 @@ impl MessagesSession {
     /// 保存 Plan 到数据库
     ///
     /// 从 IntentPlan 创建并保存 Plan 记录，order_num 取自当前 block_order
-    pub async fn save_plan(&self, intent_plan: &IntentPlan) -> Result<String, String> {
+    /// 返回 `(plan_id, order_num)`
+    pub async fn save_plan(&self, intent_plan: &IntentPlan) -> Result<(String, i32), String> {
         // plan 的 order_num 取自当前 block_order，然后递增 block_order
         // 保证后续 blocks 的 order_num 大于 plan
         let order_num = self.block_order.fetch_add(1, Ordering::SeqCst);
@@ -362,8 +363,8 @@ impl MessagesSession {
             *guard = Some(plan_id.clone());
         }
 
-        tracing::debug!("[MessagesSession] 保存 Plan 成功: plan_id={}", plan_id);
-        Ok(plan_id)
+        tracing::debug!("[MessagesSession] 保存 Plan 成功: plan_id={}, order_num={}", plan_id, order_num);
+        Ok((plan_id, order_num))
     }
 
     /// 更新 Plan 结果

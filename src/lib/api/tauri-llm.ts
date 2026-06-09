@@ -28,8 +28,11 @@ export type LlmChunkPayload =
   | { account_id: string; kind: "tool_result"; call_id: string; name: string; result: unknown; success: boolean }
   // Block 边界
   | { account_id: string; kind: "block_start"; block_type: string; order_num: number }
-  // Agent Plan 步骤
-  | { account_id: string; kind: "plan_steps"; reasoning: string; steps: PlanStepDto[] }
+  // plan 边界
+  | { account_id: string; kind: "plan_start"; plan_id: string; order_num: number; reasoning: string; steps: PlanStepDto[] }
+   // Agent Plan 步骤
+  | { account_id: string; kind: "plan_steps"; plan_id: string; reasoning: string; steps: PlanStepDto[] }
+  | { account_id: string; kind: "plan_update"; plan_id: string; step_results?: string; stop_reason: string }
   // 引用
   | { account_id: string; kind: "reference"; source_type: string; title: string; url: string; snippet?: string }
   // 音频

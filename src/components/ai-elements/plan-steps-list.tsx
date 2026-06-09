@@ -33,7 +33,7 @@ function StatusIcon({ status, className }: { status: StepStatus; className?: str
   }
 }
 
-function StepTypeBadge({ stepType }: { stepType: string }) {
+export function StepTypeBadge({ stepType }: { stepType: string }) {
   // step_type: "tool_call" / "exploratory" / "final_answer"
   const map: Record<string, { label: string; variant: "default" | "secondary" | "outline" }> = {
     tool_call: { label: "工具", variant: "secondary" },

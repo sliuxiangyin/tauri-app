@@ -1,29 +1,29 @@
-//! Block 发送器
+//! ContentType 发送器
 //!
-//! 封装 BlockStart 事件的发送逻辑：
-//! - 自动递增 order_num
+//! 封装 BlockStart / PlanStart 事件的发送逻辑：
+//! - block() 和 plan() 共用 order_num，自动递增
 //! - 检测 block 类型切换（避免重复发送）
-//! - 提供简单的 send(block_type) 接口
+//! - 提供简单的 block(block_type) / plan(plan_id) 接口
 
 use crate::provider::llm::llm_event::{LlmStreamEvent, LlmStreamSender};
+use uuid::Uuid;
 
-/// Block 发送器
+/// ContentType 发送器
 ///
-/// 封装 BlockStart 事件的发送逻辑：
-/// - 自动递增 order_num
-/// - 提供简单的 send(block_type) 接口
-/// - 支持状态追踪（检测 block 类型切换）
-pub struct BlockSender {
+/// 封装 BlockStart / PlanStart 事件的发送逻辑：
+/// - block() 和 plan() 共用 order_num，自动递增
+/// - 检测 block 类型切换（避免重复发送）
+pub struct ContentTypeSender {
     /// 当前 block 类型
     current_block_type: Option<String>,
-    /// 下一 block 序号
+    /// 下一序号（block 和 plan 共用）
     next_order_num: i32,
     /// 事件发送通道
     sender: Option<LlmStreamSender>,
 }
 
-impl BlockSender {
-    /// 创建新的 BlockSender
+impl ContentTypeSender {
+    /// 创建新的 ContentTypeSender
     pub fn new(sender: Option<LlmStreamSender>) -> Self {
         Self {
             current_block_type: None,
@@ -39,7 +39,7 @@ impl BlockSender {
     ///
     /// # 返回
     /// 返回新分配的 order_num，如果类型相同则返回 None
-    pub fn send(&mut self, block_type: &str) -> Option<i32> {
+    pub fn block(&mut self, block_type: &str) -> Option<i32> {
         // 检测 block 类型是否切换
         if self.current_block_type.as_deref() == Some(block_type) {
             // 类型相同，不发送
@@ -59,6 +59,30 @@ impl BlockSender {
         }
 
         Some(order_num)
+    }
+
+    /// 发送 PlanStart 事件
+    ///
+    /// 自动生成随机 plan_id（用于关联后续 PlanUpdate），
+    /// 分配新 order_num 并发送 PlanStart 事件（纯通知，不含内容）
+    ///
+    /// # 返回
+    /// 返回 `(plan_id, order_num)`
+    pub fn plan(&mut self) -> (String, i32) {
+        let plan_id = Uuid::now_v7().to_string();
+        let order_num = self.next_order_num;
+        self.next_order_num += 1;
+        // Plan 不属于 block 类型，重置 current_block_type 以确保下次 block() 必然发送
+        self.current_block_type = None;
+
+        if let Some(ref s) = self.sender {
+            let _ = s.send(LlmStreamEvent::PlanStart {
+                plan_id: plan_id.clone(),
+                order_num,
+            });
+        }
+
+        (plan_id, order_num)
     }
 
     /// 获取当前 block 类型

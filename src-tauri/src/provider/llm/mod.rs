@@ -21,7 +21,7 @@
 //!   - `plan_executor.rs`：计划执行器
 
 pub mod agent;
-pub mod block_sender;
+pub mod content_type_sender;
 pub mod dispatcher;
 pub mod error;
 pub mod llm_event;

@@ -208,8 +208,10 @@ impl IntentAnalyzer {
                     LlmStreamEvent::Warning { .. } => {}
                     LlmStreamEvent::Usage { .. } => {}
                     LlmStreamEvent::Metadata { .. } => {}
-                    LlmStreamEvent::PlanSteps { .. } => {}
+                    LlmStreamEvent::PlanStart { .. } => {}
+                    LlmStreamEvent::PlanUpdate { .. } => {}
                     LlmStreamEvent::BlockStart { .. } => {}
+                    LlmStreamEvent::PlanSteps { .. } => {},
                 },
                 Err(e) => {
                     return Err(e);
