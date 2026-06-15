@@ -23,6 +23,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::provider::llm::agent::types::StepType;
 use crate::provider::llm::error::LlmError;
+use crate::provider::llm::tools::{build_mcp_tool_name, parse_mcp_tool_name};
+use crate::provider::llm::types::ToolDefinition;
 
 // ──────────────────────────────────────────────────────────────
 // 数据结构
@@ -839,15 +841,118 @@ actions.length >= 1
 优化提示词"#
 }
 
+/// 生成工具命名规范示例文本
+///
+/// 使用 `build_mcp_tool_name` 动态生成标准 MCP 工具名示例，
+/// 供系统提示词（`plans_system_prompt`）和计划生成模块使用。
+///
+/// 输出示例：
+/// ```text
+/// 工具命名规范：
+///   mcp__fs__read_file
+///   mcp__fs__write_file
+///   mcp__browser__navigate
+///   mcp__browser__click
+///   mcp__browser__screenshot
+/// ```
+pub fn tool_name_convention() -> String {
+    let examples = [
+        build_mcp_tool_name("fs", "read_file"),
+        build_mcp_tool_name("fs", "write_file"),
+        build_mcp_tool_name("browser", "navigate"),
+        build_mcp_tool_name("browser", "click"),
+        build_mcp_tool_name("browser", "screenshot"),
+    ];
+
+    let mut lines = Vec::with_capacity(examples.len() + 1);
+    lines.push("工具命名规范：".to_string());
+    for name in &examples {
+        lines.push(format!("  {}", name));
+    }
+    lines.join("\n")
+}
+
+/// 将工具列表转换为可读的摘要文本
+///
+/// 输出格式示例：
+/// ```text
+/// 可用工具：
+/// - mcp__fs__read_file：读取文件，参数：path (string)
+/// - mcp__fs__write_file：写入文件，参数：path (string), content (string)
+/// ```
+pub fn format_tools_summary(tools: &[ToolDefinition]) -> String {
+    if tools.is_empty() {
+        return String::new();
+    }
+
+    let mut lines = Vec::with_capacity(tools.len() + 1);
+    lines.push("可用工具：".to_string());
+    for tool in tools {
+        // 通过 parse + build 构造标准工具名称；非 MCP 工具回退到原始名称
+        let name = &tool.function.name;
+        let desc = tool.function.description.as_deref().unwrap_or("无描述");
+
+        // 从 JSON Schema 的 properties 中提取参数名和类型
+        let params_str = extract_params_summary(&tool.function.parameters);
+
+        if params_str.is_empty() {
+            lines.push(format!("- {}：{}", name, desc));
+        } else {
+            lines.push(format!("- {}：{}，参数：{}", name, desc, params_str));
+        }
+    }
+
+    lines.join("\n")
+}
+
+/// 从 JSON Schema parameters 中提取参数摘要
+///
+/// 输入示例：
+/// ```json
+/// {
+///   "type": "object",
+///   "properties": {
+///     "path": { "type": "string", "description": "文件路径" },
+///     "content": { "type": "string" }
+///   },
+///   "required": ["path"]
+/// }
+/// ```
+///
+/// 输出：`path (string), content (string)`
+fn extract_params_summary(parameters: &serde_json::Value) -> String {
+    let properties = parameters.get("properties").and_then(|v| v.as_object());
+
+    match properties {
+        Some(props) if !props.is_empty() => props
+            .iter()
+            .map(|(key, schema)| {
+                let type_str = schema
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("any");
+                format!("{} ({})", key, type_str)
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+        _ => String::new(),
+    }
+}
+
 /// 构建计划生成的用户消息
 ///
-/// 上游（intent_prompt 解析阶段）已将 `user_request` 与 `reasoning` 组合成完整内容，
-/// 本函数只做一次纯字符串透传，避免重复解析与拼接。
+/// 将 content 与可选的工具摘要拼接，使 LLM 在 deterministic 模式下能感知可用工具。
 ///
 /// ## 参数
 /// - `content`：已经包含用户请求与意图分析 reasoning 的完整文本
-pub fn build_plans_user_message(content: &str) -> String {
-    content.to_string()
+/// - `tools`：可用工具列表（为空时不追加工具信息）
+pub fn build_plans_user_message(content: &str, tools: &[ToolDefinition]) -> String {
+    let tools_summary = format_tools_summary(tools);
+    if tools_summary.is_empty() {
+        content.to_string()
+    } else {
+        format!("{}\n\n{}", content, tools_summary)
+    }
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -1519,10 +1624,126 @@ mod tests {
 
     #[test]
     fn test_build_plans_user_message_new_signature() {
-        // 新签名：单参透传
+        // 新签名：空 tools 时仅透传 content
         let content = "【用户请求】\n查询天气\n\n【意图分析 reasoning】\n调用 API";
-        let msg = build_plans_user_message(content);
+        let msg = build_plans_user_message(content, &[]);
         assert_eq!(msg, content);
+    }
+
+    #[test]
+    fn test_build_plans_user_message_with_tools() {
+        // 带工具时消息尾部追加工具摘要
+        let content = "查询天气";
+        let tools = vec![ToolDefinition::from_mcp(
+            "mcp__fs__read_file",
+            Some("读取文件"),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "文件路径" }
+                },
+                "required": ["path"]
+            }),
+        )];
+        let msg = build_plans_user_message(content, &tools);
+        assert!(msg.starts_with(content));
+        assert!(msg.contains("可用工具："));
+        assert!(msg.contains("mcp__fs__read_file"));
+        assert!(msg.contains("path (string)"));
+    }
+
+    // =============================================================================
+    // format_tools_summary 测试
+    // =============================================================================
+
+    #[test]
+    fn test_format_tools_summary_basic() {
+        let tools = vec![
+            ToolDefinition::from_mcp(
+                "mcp__fs__read_file",
+                Some("读取文件"),
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" }
+                    }
+                }),
+            ),
+            ToolDefinition::from_mcp(
+                "mcp__fs__write_file",
+                Some("写入文件"),
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" },
+                        "content": { "type": "string" }
+                    }
+                }),
+            ),
+        ];
+
+        let summary = format_tools_summary(&tools);
+        assert!(summary.starts_with("可用工具："));
+        assert!(summary.contains("- mcp__fs__read_file：读取文件，参数：path (string)"));
+        // serde_json Map 按字母序遍历，content 在 path 之前
+        assert!(summary.contains("content (string), path (string)"));
+    }
+
+    #[test]
+    fn test_format_tools_summary_empty_tools() {
+        let tools: Vec<ToolDefinition> = vec![];
+        let summary = format_tools_summary(&tools);
+        assert!(summary.is_empty());
+    }
+
+    #[test]
+    fn test_format_tools_summary_no_params() {
+        let tools = vec![ToolDefinition::from_mcp(
+            "mcp__browser__screenshot",
+            Some("截取当前页面"),
+            serde_json::json!({
+                "type": "object",
+                "properties": {}
+            }),
+        )];
+
+        let summary = format_tools_summary(&tools);
+        assert!(summary.contains("- mcp__browser__screenshot：截取当前页面"));
+        // 无参数时不应包含 "参数：" 字样
+        assert!(!summary.contains("参数："));
+    }
+
+    #[test]
+    fn test_format_tools_summary_no_description() {
+        let tools = vec![ToolDefinition::from_mcp(
+            "mcp__fs__list_dir",
+            None,
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" }
+                }
+            }),
+        )];
+
+        let summary = format_tools_summary(&tools);
+        assert!(summary.contains("无描述"));
+    }
+
+    // =============================================================================
+    // tool_name_convention 测试
+    // =============================================================================
+
+    #[test]
+    fn test_tool_name_convention() {
+        let convention = tool_name_convention();
+        assert!(convention.starts_with("工具命名规范："));
+        // 验证使用了 build_mcp_tool_name 生成的标准名称
+        assert!(convention.contains("mcp__fs__read_file"));
+        assert!(convention.contains("mcp__fs__write_file"));
+        assert!(convention.contains("mcp__browser__navigate"));
+        assert!(convention.contains("mcp__browser__click"));
+        assert!(convention.contains("mcp__browser__screenshot"));
     }
 
     // =============================================================================

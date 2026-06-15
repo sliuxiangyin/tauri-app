@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use crate::provider::llm::llm_tool_trait::{ToolExecError, ToolExecutor};
 use crate::provider::llm::ordinary::parse_tool_arguments;
-use crate::provider::llm::parse_mcp_tool_name;
+use crate::provider::llm::tools::parse_mcp_tool_name;
 use crate::provider::llm::types::FunctionCall;
 use crate::services::traits::McpClient;
 use rmcp::model::CallToolRequestParams;

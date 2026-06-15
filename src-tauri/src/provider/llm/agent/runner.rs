@@ -569,51 +569,9 @@ impl Default for AgentEventSender {
     }
 }
 
-/// MCP 工具名称解析
-///
-/// 从 ToolDefinition 中提取 MCP 工具名称。
-/// 标准格式: "mcp__server__tool_name"
-pub fn parse_mcp_tool_name(full_name: &str) -> Option<(&str, &str)> {
-    // 期望格式: "mcp__server__tool"
-    if let Some(rest) = full_name.strip_prefix("mcp__") {
-        let parts: Vec<&str> = rest.split("__").collect();
-        if parts.len() == 2 {
-            return Some((parts[0], parts[1]));
-        }
-    }
-    None
-}
-
-/// 构建 MCP 工具名称
-pub fn build_mcp_tool_name(server_name: &str, tool_name: &str) -> String {
-    format!("mcp__{}__{}", server_name, tool_name)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_mcp_tool_name() {
-        assert_eq!(
-            parse_mcp_tool_name("mcp__playwright__goto"),
-            Some(("playwright", "goto"))
-        );
-        assert_eq!(
-            parse_mcp_tool_name("mcp__browser__navigate"),
-            Some(("browser", "navigate"))
-        );
-        assert_eq!(parse_mcp_tool_name("playwright__goto"), None);
-        assert_eq!(parse_mcp_tool_name("invalid"), None);
-    }
-
-    #[test]
-    fn test_build_mcp_tool_name() {
-        assert_eq!(
-            build_mcp_tool_name("playwright", "goto"),
-            "mcp__playwright__goto"
-        );
-    }
 
     #[test]
     fn test_agent_config_default() {

@@ -4,3 +4,5 @@ pub mod tool_executor;
 mod analyze_test;
 #[cfg(test)]
 mod plan_executor_test;
+#[cfg(test)]
+mod plans_test;

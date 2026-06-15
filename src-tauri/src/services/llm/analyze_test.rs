@@ -53,7 +53,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// 测试:真实 LLM 对简单问候不应启用 Agent
-    /// 运行: `OPENAI_API_KEY=xxx cargo test --lib -- --ignored test_analyzer_real_simple --nocapture  `
+    /// 运行: `OPENAI_API_KEY=xxx  cargo test --lib -- test_analyzer_real_simple_question  `
     #[tokio::test]
     async fn test_analyzer_real_simple_question() {
           // 初始化 tracing
@@ -67,7 +67,7 @@ mod tests {
         let analyzer = IntentAnalyzer::new(provider);
 
         let result = analyzer
-            .analyze(vec![ChatMessage::new(Role::User, "帮我搜索达州，并获取前三条搜索结果?")])
+            .analyze(vec![ChatMessage::new(Role::User, "打开浏览器，帮我搜索达州，并获取前三条搜索结果?")])
             .await;
         tracing::debug!("dddddddddd {:?}", result);  // 改用 eprintln! 
         assert!(result.is_ok(), "真实 LLM 意图分析应成功: {:?}", result.err());

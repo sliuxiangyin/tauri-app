@@ -4,6 +4,7 @@
 //!
 //! ## 模块说明
 //! - `analyzer.rs`：意图分析器（仅做意图判断，输出 `need_agent` + `reasoning`）
+//! - `plans.rs`：计划生成器（基于意图分析结果生成执行计划 `steps` 列表）
 //! - `config.rs`：AgentConfig
 //! - `event.rs`：AgentStreamEvent
 //! - `plan_executor/`：计划执行器（目录形式）
@@ -16,13 +17,15 @@ pub mod analyzer;
 pub mod config;
 pub mod event;
 pub mod plan_executor;
+pub mod plans;
 pub mod runner;
 pub mod types;
 
 pub use analyzer::IntentAnalyzer;
+pub use plans::PlansAnalyzer;
 
 pub use config::AgentConfig;
 pub use event::{AgentResultSummary, AgentStreamEvent};
 pub use plan_executor::{PlanExecutor, PlanEventCallback, PlanResult, PlanStreamEvent, PlanStopReason};
-pub use runner::{AgentEventCallback, AgentRunner, parse_mcp_tool_name};
+pub use runner::{AgentEventCallback, AgentRunner};
 pub use types::{LlmDecision, StepAction, StepType};

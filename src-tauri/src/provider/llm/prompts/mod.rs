@@ -21,6 +21,7 @@ pub use intent_prompt::{
 
 #[allow(unused_imports)]
 pub use plans_prompt::{
-    build_plans_user_message, parse_plans_response, plans_system_prompt,
+    build_plans_user_message, format_tools_summary, parse_plans_response, plans_system_prompt,
+    tool_name_convention,
     PlanStep, PlansResponse, SubAction,
 };
