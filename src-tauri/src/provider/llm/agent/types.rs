@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 pub enum StepType {
     /// 确定性步骤：工具和参数在计划阶段已知，可直接执行
     Deterministic,
+    /// 推理性步骤：需要模型进行推理、分析、归纳或内容生成
+    Reasoning,
     /// 探索性步骤：需要在执行时根据上下文决定工具和参数
     Exploratory,
 }

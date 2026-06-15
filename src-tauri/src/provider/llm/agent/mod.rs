@@ -3,7 +3,7 @@
 //! 包含 Agent 循环执行器、配置、事件定义和意图分析器
 //!
 //! ## 模块说明
-//! - `analyzer.rs`：意图分析器（统一意图分析和决策能力）
+//! - `analyzer.rs`：意图分析器（仅做意图判断，输出 `need_agent` + `reasoning`）
 //! - `config.rs`：AgentConfig
 //! - `event.rs`：AgentStreamEvent
 //! - `plan_executor/`：计划执行器（目录形式）
@@ -19,7 +19,7 @@ pub mod plan_executor;
 pub mod runner;
 pub mod types;
 
-pub use analyzer::{IntentAnalyzer, provider_helper};
+pub use analyzer::IntentAnalyzer;
 
 pub use config::AgentConfig;
 pub use event::{AgentResultSummary, AgentStreamEvent};

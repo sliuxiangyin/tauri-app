@@ -2,10 +2,25 @@
 //!
 //! 包含各类 LLM 提示词模板及相关工具函数
 
+pub mod exploratory_prompt;
 pub mod intent_prompt;
+pub mod plans_prompt;
+
+#[allow(unused_imports)]
+pub use exploratory_prompt::{
+    build_exploratory_initial_message,
+    build_history_summary, build_goal_check_message, parse_goal_check_response,
+    exploratory_system_prompt, goal_check_system_prompt,
+};
 
 #[allow(unused_imports)]
 pub use intent_prompt::{
-    build_intent_user_message, build_tools_description, extract_user_request,
-    intent_system_prompt, parse_intent_response,
+    build_intent_user_message, extract_user_request, intent_system_prompt, parse_intent_response,
+    IntentResponse,
+};
+
+#[allow(unused_imports)]
+pub use plans_prompt::{
+    build_plans_user_message, parse_plans_response, plans_system_prompt,
+    PlanStep, PlansResponse, SubAction,
 };

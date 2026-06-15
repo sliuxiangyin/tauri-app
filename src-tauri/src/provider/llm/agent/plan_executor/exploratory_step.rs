@@ -1,33 +1,59 @@
 //! 探索性步骤执行器
 //!
-//! 负责执行步骤类型为 `Exploratory` 的计划步骤：
-//! 1. 构建上下文信息（步骤目标、前置输出、历史结果、可用工具）
-//! 2. 调用 LLM 决定使用哪个工具及参数
-//! 3. 将探索性步骤转换为确定性步骤后执行
+//! 探索性步骤是一个完整的 Agent 循环：
+//! 1. LLM 决策下一步工具
+//! 2. 执行工具
+//! 3. LLM 判断是否达成目标
+//! 4. 未达成则继续循环，直到达成或达到最大调用次数
+//!
+//! 提示词统一从 `prompts::exploratory_prompt` 模块获取
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use futures_util::StreamExt;
 use serde_json::Value;
 
+use super::message_context::MessageContext;
 use super::{PlanError, StepContext};
-use crate::provider::llm::agent::IntentAnalyzer;
+use crate::provider::llm::llm_event::LlmStreamEvent;
 use crate::provider::llm::llm_tool_trait::{ToolExecError, ToolExecutor};
+use crate::provider::llm::prompts::{
+    build_goal_check_message, goal_check_system_prompt, parse_goal_check_response,
+};
 use crate::provider::llm::providers::LlmProvider;
-use crate::provider::llm::types::{ChatMessage, PlanStep, Role};
-use crate::provider::llm::types::StepType;
-use crate::provider::llm::agent::plan_executor::step_executor::execute_step;
+use crate::provider::llm::types::{ChatMessage, ChatRequest, FunctionCall, PlanStep, Role, SubAction, ToolDefinition};
 
-/// 执行探索性步骤
+/// 执行探索性步骤（Agent 循环模式）
 ///
-/// 探索性步骤需要在执行时根据上下文决定工具和参数。
-/// 如果没有配置 LLM Provider，返回错误。
+/// 探索性步骤是一个完整的 Agent 循环：
+/// 1. LLM 决策下一步工具
+/// 2. 执行工具
+/// 3. LLM 判断是否达成目标
+/// 4. 未达成则继续循环
+///
+/// # 参数
+/// - `llm_provider`: LLM Provider（必需）
+/// - `tool_executor`: 工具执行器
+/// - `available_tools`: 可用工具完整 schema
+/// - `context`: 步骤执行上下文
+/// - `step`: 探索性步骤
+/// - `abort_flag`: 中止标志
+/// - `model`: LLM 模型名称
+/// - `max_calls`: 最大工具调用次数
+///
+/// # 返回
+/// 返回更新后的 `PlanStep`
 pub(crate) async fn execute_exploratory_step(
     llm_provider: &Option<Arc<dyn LlmProvider>>,
     tool_executor: Arc<dyn ToolExecutor>,
-    available_tools: &[String],
-    step: &PlanStep,
+    available_tools: &[ToolDefinition],
     context: &StepContext,
-) -> Result<String, PlanError> {
+    step: &PlanStep,
+    abort_flag: Arc<AtomicBool>,
+    model: &str,
+    max_calls: u8,
+) -> Result<PlanStep, PlanError> {
     let Some(llm) = llm_provider else {
         return Err(PlanError::ToolError(ToolExecError {
             name: "exploratory".to_string(),
@@ -35,139 +61,250 @@ pub(crate) async fn execute_exploratory_step(
         }));
     };
 
-    // 构建上下文信息
-    let context_info = build_exploratory_context(available_tools, step, context);
+    tracing::info!(
+        "[Exploratory] Starting Agent loop for step: {}, max_calls={}",
+        step.step_goal,
+        max_calls
+    );
 
-    // 调用 LLM 决定工具和参数
-    let (tool_name, parameters) = decide_tool_for_exploratory(llm, &context_info).await?;
+    // 构建消息上下文（统一管理 LLM 对话消息列表）
+    let mut msg_ctx = MessageContext::new("");
 
-    // 使用 LLM 决定的信息执行步骤（转换为确定性步骤）
-    let step_with_decision = PlanStep {
-        order: step.order,
-        step_type: StepType::Deterministic,
-        tool_name,
-        parameters,
-        step_goal: step.step_goal.clone(),
-        expected_output: step.expected_output.clone(),
-        depends_on: step.depends_on,
-    };
+    // 工具调用历史（用于判断目标达成）
+    let mut tool_calls_history: Vec<(String, String)> = Vec::new();
 
-    execute_step(&tool_executor, &step_with_decision, context).await
-}
+    // 收集所有工具执行结果作为最终输出
+    let mut all_outputs: Vec<String> = Vec::new();
 
-/// 构建探索性步骤的上下文信息
-///
-/// 包含：步骤目标、前置步骤输出、已执行步骤历史、可用工具列表。
-fn build_exploratory_context(
-    available_tools: &[String],
-    step: &PlanStep,
-    context: &StepContext,
-) -> String {
-    let mut info = String::new();
+    // Agent 循环
+    for call_count in 0..max_calls {
+        // 检查中止标志
+        if abort_flag.load(Ordering::SeqCst) {
+            return Err(PlanError::Aborted);
+        }
 
-    // 添加步骤目标
-    info.push_str(&format!("【步骤目标】\n{}\n\n", step.step_goal));
+        tracing::debug!(
+            "[Exploratory] Call {}/{} for step: {}",
+            call_count + 1,
+            max_calls,
+            step.step_goal
+        );
 
-    // 添加前置步骤输出（如果有依赖）
-    if let Some(dep_order) = step.depends_on {
-        if let Some(dep_output) = context.get_output(dep_order) {
-            info.push_str(&format!("【前置步骤输出】\n{}\n\n", dep_output));
+        // 1. LLM 决策下一步工具
+        let tool_call =  llm_decide_next_tool(
+            llm,
+            msg_ctx.messages(),
+            available_tools,
+            model,
+            abort_flag.clone(),
+        )
+        .await?;
+
+        // 2. 执行工具
+        let (tool_name, result) = llm_execute_tool(
+            tool_executor.clone(),
+            tool_call,
+        )
+        .await?;
+
+        tracing::info!(
+            "[Exploratory] Tool executed: {} -> {}",
+            tool_name,
+            result.chars().take(50).collect::<String>()
+        );
+
+        // 记录工具调用并添加到消息历史
+        tool_calls_history.push((tool_name.clone(), result.clone()));
+        all_outputs.push(format!("[{}] {}", tool_name, result));
+        msg_ctx.push_tool_result(&tool_name, &result);
+
+        // 3. LLM 判断是否达成目标
+        let (achieved, reason) = llm_check_goal(
+            llm,
+            &step.step_goal,
+            &tool_calls_history,
+            model,
+            abort_flag.clone(),
+        )
+        .await?;
+
+        tracing::debug!(
+            "[Exploratory] Goal check: achieved={}, reason={}",
+            achieved,
+            reason
+        );
+
+        // 添加判断结果到消息历史
+        msg_ctx.push_goal_check(achieved, &reason);
+
+        // 如果目标达成，返回结果
+        if achieved {
+            tracing::info!(
+                "[Exploratory] Step completed successfully after {} calls",
+                call_count + 1
+            );
+
+            // 构建 SubAction 列表（记录所有工具调用）
+            let mut actions = Vec::new();
+            for (idx, (name, result)) in tool_calls_history.iter().enumerate() {
+                actions.push(SubAction {
+                    order: (idx + 1) as u8,
+                    tool_name: name.clone(),
+                    parameters: serde_json::json!({}),
+                    output: Some(result.clone()),
+                });
+            }
+
+            return Ok(PlanStep {
+                order: step.order,
+                step_type: step.step_type,
+                step_goal: step.step_goal.clone(),
+                expected_output: step.expected_output.clone(),
+                depends_on: step.depends_on.clone(),
+                input: step.input.clone(),
+                success_criteria: step.success_criteria.clone(),
+                actions,
+            });
         }
     }
 
-    // 添加历史结果
-    if !context.results.is_empty() {
-        let history = context
-            .results
-            .iter()
-            .map(|r| {
-                format!(
-                    "步骤{}: {} - {}",
-                    r.order,
-                    r.tool_name,
-                    if r.success { "成功" } else { "失败" }
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        info.push_str(&format!("【已执行步骤】\n{}\n\n", history));
-    }
-
-    // 添加可用工具列表
-    if !available_tools.is_empty() {
-        info.push_str(&format!("【可用工具】\n{}\n\n", available_tools.join(", ")));
-    }
-
-    info
-}
-
-/// 调用 LLM 决定探索性步骤的工具和参数
-async fn decide_tool_for_exploratory(
-    llm: &Arc<dyn LlmProvider>,
-    context_info: &str,
-) -> Result<(String, Value), PlanError> {
-    let user_message = format!(
-        r#"【探索性步骤：需要决定工具和参数】
-{}
-
-请根据上述信息，从可用工具中选择最合适的工具并决定参数。
-
-要求：
-1. 只返回 JSON，不要其他文字
-2. 格式：{{"tool_name": "工具名", "parameters": {{}}}}
-3. 只选择一个工具
-"#,
-        context_info
+    // 达到最大调用次数，目标未达成
+    tracing::warn!(
+        "[Exploratory] Step failed: reached max_calls={} without achieving goal",
+        max_calls
     );
 
-    let messages = vec![
-        ChatMessage::new(
-            Role::System,
-            "你是一个智能助手，负责在探索性步骤中决定使用哪个工具以及参数。请只返回 JSON 格式的回答。",
+    Err(PlanError::ToolError(ToolExecError {
+        name: "exploratory".to_string(),
+        message: format!(
+            "Step '{}' failed after {} calls: {}",
+            step.step_goal,
+            max_calls,
+            tool_calls_history
+                .last()
+                .map(|(_, r)| r.as_str())
+                .unwrap_or("unknown")
         ),
-        ChatMessage::new(Role::User, &user_message),
-    ];
+    }))
+}
 
-    let analyzer = IntentAnalyzer::new(llm.clone());
-    let response = analyzer
-        .decision_raw(messages, vec![])
-        .await
-        .map_err(|e| {
-            PlanError::ToolError(ToolExecError {
-                name: "exploratory".to_string(),
-                message: format!("Failed to decide tool: {}", e),
-            })
-        })?;
-
-    // 解析 LLM 响应（提取 JSON 部分）
-    let json_str = if response.contains('{') {
-        let start = response.find('{').unwrap();
-        let end = response.rfind('}').unwrap_or(response.len() - 1);
-        &response[start..=end]
-    } else {
-        &response
+/// LLM 决策下一步工具
+async fn llm_decide_next_tool(
+    llm: &Arc<dyn LlmProvider>,
+    messages: &[ChatMessage],
+    available_tools: &[ToolDefinition],
+    model: &str,
+    abort_flag: Arc<AtomicBool>,
+) -> Result<FunctionCall, PlanError> {
+    let req = ChatRequest {
+        messages: messages.to_vec(),
+        model: model.to_string(),
+        temperature: 0.7,
+        max_tokens: None,
+        tools: Some(available_tools.to_vec()),
     };
 
-    let json: Value =
-        serde_json::from_str(json_str).map_err(|e| PlanError::ToolError(ToolExecError {
+    let stream = llm
+        .stream_chat(req, abort_flag)
+        .await
+        .map_err(|e| PlanError::ToolError(ToolExecError {
             name: "exploratory".to_string(),
-            message: format!("Failed to parse LLM response: {}", e),
+            message: format!("LLM stream error: {}", e),
         }))?;
 
-    let tool_name = json
-        .get("tool_name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    // 使用 process_tool_batch 获取工具调用
+    let result = crate::provider::llm::ordinary::process_tool_batch(
+        stream,
+        None,  // 这里不执行工具，只获取 LLM 的决策
+        None,
+    )
+    .await
+    .map_err(|e| PlanError::ToolError(ToolExecError {
+        name: "exploratory".to_string(),
+        message: format!("process_tool_batch error: {}", e),
+    }))?;
 
-    let parameters = json.get("parameters").cloned().unwrap_or(serde_json::json!({}));
-
-    if tool_name.is_empty() {
-        return Err(PlanError::ToolError(ToolExecError {
+    // 解析工具调用
+    if let Some(call) = result.tool_calls.first() {
+        Ok(FunctionCall {
+            id: format!("exploratory_{}", std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()),
+            name: call.name.clone(),
+            arguments: call.arguments.clone(),
+        })
+    } else {
+        Err(PlanError::ToolError(ToolExecError {
             name: "exploratory".to_string(),
-            message: "LLM did not return a tool name".to_string(),
-        }));
+            message: format!("No tool call from LLM: {}", result.text),
+        }))
+    }
+}
+
+/// LLM 执行工具
+async fn llm_execute_tool(
+    tool_executor: Arc<dyn ToolExecutor>,
+    call: FunctionCall,
+) -> Result<(String, String), PlanError> {
+    let result = tool_executor
+        .execute_tool(call.clone())
+        .await
+        .map_err(|e| PlanError::ToolError(e))?;
+
+    let output = if result.is_string() {
+        result.as_str().unwrap_or("").to_string()
+    } else {
+        serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string())
+    };
+
+    Ok((call.name, output))
+}
+
+/// LLM 判断目标是否达成
+async fn llm_check_goal(
+    llm: &Arc<dyn LlmProvider>,
+    step_goal: &str,
+    tool_calls_history: &[(String, String)],
+    model: &str,
+    abort_flag: Arc<AtomicBool>,
+) -> Result<(bool, String), PlanError> {
+    let user_message = build_goal_check_message(step_goal, tool_calls_history);
+
+    let req = ChatRequest {
+        messages: vec![
+            ChatMessage::new(Role::System, goal_check_system_prompt()),
+            ChatMessage::new(Role::User, &user_message),
+        ],
+        model: model.to_string(),
+        temperature: 0.3,
+        max_tokens: None,
+        tools: None,
+    };
+
+    let stream = llm
+        .stream_chat(req, abort_flag)
+        .await
+        .map_err(|e| PlanError::ToolError(ToolExecError {
+            name: "exploratory".to_string(),
+            message: format!("LLM goal check error: {}", e),
+        }))?;
+
+    // 流式收集完整响应
+    let mut response = String::new();
+    let mut stream = stream;
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(LlmStreamEvent::TextDelta { text }) => {
+                response.push_str(&text);
+            }
+            Ok(_) => {} // 忽略其他事件
+            Err(e) => return Err(PlanError::ToolError(ToolExecError {
+                name: "exploratory".to_string(),
+                message: format!("Stream error: {}", e),
+            })),
+        }
     }
 
-    Ok((tool_name, parameters))
+    Ok(parse_goal_check_response(&response))
 }

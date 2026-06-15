@@ -7,18 +7,10 @@
 //! 1. 设置环境变量：OPENAI_API_KEY
 //! 2. 运行真实测试: `cargo test --lib -- --ignored test_intent_real`
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use futures_util::Stream;
-use futures_util::StreamExt;
 use std::collections::HashMap;
-use std::pin::Pin;
 
-use crate::provider::llm::error::LlmError;
-use crate::provider::llm::llm_event::LlmStreamEvent;
-use crate::provider::llm::providers::provider_trait::LlmStream;
 use crate::provider::llm::types::{ChatMessage, ChatRequest, Role, ToolDefinition};
 use crate::provider::llm::IntentAnalyzer;
 use crate::provider::llm::providers::provider_trait::LlmProvider;
@@ -155,16 +147,16 @@ async fn test_intent_real_with_llm() {
 
     let analyzer = IntentAnalyzer::new(Arc::new(provider));
     let messages = create_user_message("告诉我历史上的今天发生了什么？");
-    let tools = create_test_tools();
 
-    let result = analyzer.analyze(messages, tools).await;
+    // TODO(plan-module): 意图分析已不再需要工具上下文；
+    // 工具选择属于 Plan / 执行阶段。analyzer.analyze 新签名已移除 available_tools 参数。
+    let result = analyzer.analyze(messages).await;
     match result {
-        Ok(plan) => {
-            println!("意图分析结果: need_agent={}", plan.need_agent);
-            println!("reasoning: {}", plan.reasoning);
-            for step in &plan.steps {
-                println!("  Step {}: {} -> {}", step.order, step.tool_name, step.step_goal);
-            }
+        Ok(resp) => {
+            println!("意图分析结果: need_agent={}", resp.need_agent);
+            println!("reasoning: {}", resp.reasoning);
+            // TODO(plan-module): 当 Plan 生成模块就绪后,
+            // 这里会迭代 resp.reasoning 派生出的 steps。
         }
         Err(e) => {
             panic!("意图分析失败: {:?}", e);
@@ -278,19 +270,17 @@ async fn test_full_pipeline_with_real_services() {
     ).with_model(model.clone());
     let analyzer = IntentAnalyzer::new(Arc::new(provider)).with_model(model);
 
-    // 调用意图分析（传入可用工具）
+    // 调用意图分析（不携带工具上下文；工具选择属于 Plan / 执行阶段）
     let messages = create_user_message("打开百度，搜索安仁乡，提取前3条搜索结果给我");
-    let result = analyzer.analyze(messages, all_tools).await;
+    let result = analyzer.analyze(messages).await;
 
     match result {
-        Ok(plan) => {
-            println!("\n=== 意图计划 ===");
-            println!("need_agent: {}", plan.need_agent);
-            println!("reasoning: {}", plan.reasoning);
-            println!("steps: {}", plan.steps.len());
-            for step in &plan.steps {
-                println!("  {}. [{:?}] {} - {}", step.order, step.step_type, step.tool_name, step.step_goal);
-            }
+        Ok(resp) => {
+            println!("\n=== 意图分析 ===");
+            println!("need_agent: {}", resp.need_agent);
+            println!("reasoning: {}", resp.reasoning);
+            // TODO(plan-module): 当 Plan 生成模块就绪后,
+            // 这里会打印由 resp.reasoning 派生出的 steps。
         }
         Err(e) => panic!("分析失败: {:?}", e),
     }
@@ -444,14 +434,13 @@ async fn test_analyzer_no_mcp() {
 
     println!("[STEP 4] 调用 analyzer.analyze...");
     let messages = create_user_message("你好，今天天气怎么样？");
-    let result = analyzer.analyze(messages, vec![]).await;
+    let result = analyzer.analyze(messages).await;
 
     match result {
-        Ok(plan) => {
-            println!("\n=== 意图计划 ===");
-            println!("need_agent: {}", plan.need_agent);
-            println!("reasoning: {}", plan.reasoning);
-            println!("steps: {}", plan.steps.len());
+        Ok(resp) => {
+            println!("\n=== 意图分析 ===");
+            println!("need_agent: {}", resp.need_agent);
+            println!("reasoning: {}", resp.reasoning);
         }
         Err(e) => {
             panic!("失败: {:?}", e);
@@ -541,142 +530,6 @@ async fn test_analyzer_with_system_prompt() {
 }
 
 // =============================================================================
-// Mock 测试（不需要网络）
+// 集成测试末尾 — IntentAnalyzer 单元测试已迁移到 `services::llm::analyze_test`，
+// 那里使用 Mock LLM Provider，无需网络与真实 LLM。
 // =============================================================================
-
-/// Mock LLM Provider
-struct MockLlmProvider {
-    response: String,
-}
-
-impl MockLlmProvider {
-    fn new(response: impl Into<String>) -> Self {
-        Self {
-            response: response.into(),
-        }
-    }
-}
-
-#[async_trait]
-impl crate::provider::llm::providers::LlmProvider for MockLlmProvider {
-    async fn send_message(&self, _req: ChatRequest) -> Result<String, LlmError> {
-        Ok(self.response.clone())
-    }
-
-    async fn stream_chat(
-        &self,
-        _req: ChatRequest,
-        _abort_flag: Arc<AtomicBool>,
-    ) -> Result<LlmStream, LlmError> {
-        let stream = futures_util::stream::once(async move {
-            Ok::<LlmStreamEvent, LlmError>(LlmStreamEvent::Done)
-        });
-        Ok(Box::pin(stream))
-    }
-
-    fn default_model(&self) -> Option<&str> { None }
-}
-
-/// 测试：简单问答（不需要工具）
-#[tokio::test]
-async fn test_intent_simple_question() {
-    let mock_response = r#"{"need_agent":false,"reasoning":"简单问答","steps":[]}"#;
-    let provider = MockLlmProvider::new(mock_response);
-    let analyzer = IntentAnalyzer::new(Arc::new(provider)).with_model("gpt-4".to_string());
-
-    let messages = create_user_message("你好，今天天气怎么样？");
-    let tools = create_test_tools();
-
-    let result = analyzer.analyze(messages, tools).await;
-    assert!(result.is_ok(), "意图分析应该成功: {:?}", result.err());
-
-    let plan = result.unwrap();
-    assert!(!plan.need_agent, "简单问答不需要启用 Agent 模式");
-    assert!(plan.steps.is_empty(), "简单问答不需要步骤");
-}
-
-/// 测试：需要搜索查询
-#[tokio::test]
-async fn test_intent_search_query() {
-    let mock_response = r#"{
-        "need_agent": true,
-        "reasoning": "用户询问历史上的今天",
-        "steps": [
-            {
-                "order": 1,
-                "step_type": "deterministic",
-                "tool_name": "mcp__baidu-baike__baike_today_in_history",
-                "parameters": {"date": "05-29"},
-                "step_goal": "查询5月29日的历史事件",
-                "expected_output": "事件列表",
-                "depends_on": null
-            }
-        ]
-    }"#;
-    let provider = MockLlmProvider::new(mock_response);
-    let analyzer = IntentAnalyzer::new(Arc::new(provider)).with_model("gpt-4".to_string());
-
-    let messages = create_user_message("历史上的今天发生了什么？");
-    let tools = create_test_tools();
-
-    let result = analyzer.analyze(messages, tools).await;
-    assert!(result.is_ok());
-
-    let plan = result.unwrap();
-    assert!(plan.need_agent);
-    assert_eq!(plan.steps.len(), 1);
-    assert_eq!(plan.steps[0].order, 1);
-}
-
-/// 测试：Markdown 格式响应解析
-#[tokio::test]
-async fn test_intent_markdown_format() {
-    let mock_response = r#"```json
-{"need_agent":true,"reasoning":"测试","steps":[{"order":1,"tool_name":"mcp__test__tool","parameters":{},"step_goal":"测试","depends_on":null}]}
-```"#;
-    let provider = MockLlmProvider::new(mock_response);
-    let analyzer = IntentAnalyzer::new(Arc::new(provider)).with_model("gpt-4".to_string());
-
-    let messages = create_user_message("测试");
-    let tools = vec![];
-
-    let result = analyzer.analyze(messages, tools).await;
-    assert!(result.is_ok(), "Markdown 格式应该能正确解析");
-
-    let plan = result.unwrap();
-    assert!(plan.need_agent);
-    assert_eq!(plan.steps.len(), 1);
-}
-
-/// 测试：exploratory 类型步骤（tool_name 可为空）
-#[tokio::test]
-async fn test_intent_exploratory_step() {
-    let mock_response = r#"{
-        "need_agent": true,
-        "reasoning": "需要探索",
-        "steps": [
-            {
-                "order": 1,
-                "step_type": "exploratory",
-                "tool_name": null,
-                "parameters": {},
-                "step_goal": "探索合适工具",
-                "depends_on": null
-            }
-        ]
-    }"#;
-    let provider = MockLlmProvider::new(mock_response);
-    let analyzer = IntentAnalyzer::new(Arc::new(provider)).with_model("gpt-4".to_string());
-
-    let messages = create_user_message("找点有意思的");
-    let tools = vec![];
-
-    let result = analyzer.analyze(messages, tools).await;
-    assert!(result.is_ok());
-
-    let plan = result.unwrap();
-    assert!(plan.steps[0]
-        .step_type
-        .eq(&crate::provider::llm::types::StepType::Exploratory));
-    assert!(plan.steps[0].tool_name.is_empty(), "exploratory 步骤 tool_name 可为空");
-}

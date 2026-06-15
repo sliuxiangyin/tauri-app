@@ -36,7 +36,7 @@ pub use agent::{
     AgentConfig, AgentEventCallback, AgentResultSummary, AgentRunner, AgentStreamEvent,
     parse_mcp_tool_name, PlanExecutor, PlanEventCallback, PlanResult, PlanStreamEvent, PlanStopReason,
     LlmDecision, StepAction, StepType,
-    IntentAnalyzer, provider_helper,
+    IntentAnalyzer,
 };
 pub use dispatcher::Provider;
 #[allow(unused_imports)]

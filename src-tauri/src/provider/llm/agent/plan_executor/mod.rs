@@ -12,16 +12,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use serde_json::Value;
 use tracing::{debug, error, info, warn};
 
 use crate::provider::llm::llm_tool_trait::{ToolExecError, ToolExecutor};
-use crate::provider::llm::agent::IntentAnalyzer;
 use crate::provider::llm::providers::LlmProvider;
-use crate::provider::llm::agent::types::{LlmDecision, StepAction, StepType};
-use crate::provider::llm::types::{ChatMessage, FunctionCall, IntentPlan, PlanStep, Role};
+use crate::provider::llm::agent::types::StepType;
+use crate::provider::llm::types::{IntentPlan, PlanStep, ToolDefinition};
 
 pub(crate) mod exploratory_step;
+pub(crate) mod message_context;
 pub(crate) mod step_executor;
 
 use exploratory_step::execute_exploratory_step;
@@ -112,24 +111,73 @@ impl From<ToolExecError> for PlanError {
     }
 }
 
-/// 步骤执行上下文（存储每个步骤的输出，供后续步骤引用）
-struct StepContext {
-    results: Vec<StepResult>,
+/// 步骤执行上下文（存储已执行的步骤，供后续步骤引用）
+pub(crate) struct StepContext {
+    /// 已执行的步骤列表
+    executed_steps: Vec<PlanStep>,
 }
 
 impl StepContext {
     fn new() -> Self {
         Self {
-            results: Vec::new(),
+            executed_steps: Vec::new(),
         }
     }
 
     /// 获取指定步骤的输出
-    fn get_output(&self, order: u8) -> Option<&str> {
-        self.results
+    fn get_output(&self, order: u8) -> Option<String> {
+        self.executed_steps
             .iter()
-            .find(|r| r.order == order)
-            .map(|r| r.output.as_str())
+            .find(|s| s.order == order)
+            .and_then(|s| s.actions.last())  // 取最后一个 SubAction 的输出
+            .and_then(|a| a.output.as_ref())
+            .map(|s| s.clone())
+    }
+
+    /// 获取已执行的步骤列表
+    fn get_executed_steps(&self) -> &[PlanStep] {
+        &self.executed_steps
+    }
+
+    /// 获取历史摘要（用于 LLM 上下文）
+    fn get_history_summary(&self) -> String {
+        if self.executed_steps.is_empty() {
+            return String::new();
+        }
+
+        self.executed_steps
+            .iter()
+            .filter_map(|s| {
+                // 从 actions 列表获取输出
+                let output = s
+                    .actions
+                    .last()
+                    .and_then(|a| a.output.as_ref())
+                    .map(|s| s.as_str())
+                    .unwrap_or("（无输出）");
+
+                // 获取第一个动作的工具名
+                let tool_name = s
+                    .actions
+                    .first()
+                    .map(|a| a.tool_name.as_str())
+                    .unwrap_or("（无工具）");
+
+                Some(format!(
+                    "步骤{} ({}): {} - 输出: {}",
+                    s.order,
+                    tool_name,
+                    s.step_goal,
+                    output.chars().take(50).collect::<String>()
+                ))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// 添加已执行的步骤
+    fn push(&mut self, step: PlanStep) {
+        self.executed_steps.push(step);
     }
 }
 
@@ -141,20 +189,24 @@ impl StepContext {
 ///
 /// 按步骤顺序执行计划，支持依赖检查和结果验证
 ///
-/// 采用混合模式：正常情况下按计划顺序执行；步骤失败时调用 LLM 分析原因并决定后续动作
+/// 探索性步骤采用 Agent 循环模式，内部可多次调用工具直到达成目标。
 pub struct PlanExecutor {
     /// 工具执行器
     tool_executor: Arc<dyn ToolExecutor>,
     /// LLM Provider（用于步骤失败时的分析决策）
     llm_provider: Option<Arc<dyn LlmProvider>>,
+    /// LLM 模型名称（用于探索性步骤的 Function Calling）
+    model: String,
     /// 事件回调（用于实时推送执行事件）
     event_callback: Option<PlanEventCallback>,
-    /// 可用工具列表（用于验证工具是否存在）
-    available_tools: Vec<String>,
+    /// 可用工具列表（完整 schema，用于验证工具是否存在和 Function Calling）
+    available_tools: Vec<ToolDefinition>,
     /// 步数限制
     max_steps: u8,
     /// 最大重试次数
     max_retries: u8,
+    /// 探索性步骤最大工具调用次数（Agent 循环上限）
+    max_exploratory_calls: u8,
 }
 
 impl PlanExecutor {
@@ -163,10 +215,12 @@ impl PlanExecutor {
         Self {
             tool_executor,
             llm_provider: None,
+            model: String::new(),
             event_callback: None,
             available_tools: Vec::new(),
             max_steps: 50,
             max_retries: 2,
+            max_exploratory_calls: 5,  // 探索性步骤最多调用 5 次工具
         }
     }
 
@@ -176,8 +230,20 @@ impl PlanExecutor {
         self
     }
 
+    /// 设置 LLM 模型名称（用于探索性步骤的 Function Calling）
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = model.into();
+        self
+    }
+
+    /// 设置探索性步骤最大工具调用次数
+    pub fn with_max_exploratory_calls(mut self, max: u8) -> Self {
+        self.max_exploratory_calls = max;
+        self
+    }
+
     /// 设置可用工具列表
-    pub fn with_available_tools(mut self, tools: Vec<String>) -> Self {
+    pub fn with_available_tools(mut self, tools: Vec<ToolDefinition>) -> Self {
         self.available_tools = tools;
         self
     }
@@ -206,7 +272,7 @@ impl PlanExecutor {
             // 如果没有配置可用工具列表，默认允许执行
             true
         } else {
-            self.available_tools.iter().any(|t| t == tool_name)
+            self.available_tools.iter().any(|t| t.function.name == tool_name)
         }
     }
 
@@ -252,14 +318,8 @@ impl PlanExecutor {
             });
         }
 
-        // 按顺序执行步骤
-        let mut context = StepContext::new();
-        let mut final_reply = String::new();
-        let total_steps = plan.steps.len() as u8;
-        let mut stop_reason = PlanStopReason::Completed;
-
         // 按 order 排序步骤
-        let mut sorted_steps = plan.steps.clone();
+        let mut sorted_steps: Vec<PlanStep> = plan.steps.clone();
         sorted_steps.sort_by_key(|s| s.order);
 
         // 验证步骤数不超过限制
@@ -277,7 +337,14 @@ impl PlanExecutor {
             reasoning: plan.reasoning.clone(),
         });
 
-        for step in &sorted_steps {
+        // 按顺序执行步骤
+        let mut context = StepContext::new();
+        let mut final_reply = String::new();
+        let total_steps = sorted_steps.len() as u8;
+        let mut stop_reason = PlanStopReason::Completed;
+
+        for idx in 0..sorted_steps.len() {
+            let step = &sorted_steps[idx];
             // 检查中止标志
             if abort_flag.load(Ordering::SeqCst) {
                 stop_reason = PlanStopReason::UserAbort;
@@ -286,30 +353,31 @@ impl PlanExecutor {
             }
 
             // 检查工具是否存在（探索性步骤由 LLM 动态决定工具，跳过此检查）
+            let tool_name = step.actions.first()
+                .map(|a| a.tool_name.clone())
+                .unwrap_or_default();
             if step.step_type != StepType::Exploratory
-                && !self.tool_exists(&step.tool_name)
+                && !self.tool_exists(&tool_name)
             {
                 error!(
                     "PlanExecutor: tool '{}' not found (step {})",
-                    step.tool_name, step.order
+                    tool_name, step.order
                 );
                 self.emit(PlanStreamEvent::StepError {
                     step: step.order,
-                    tool: step.tool_name.clone(),
-                    error: format!("Tool not found: {}", step.tool_name),
+                    tool: tool_name.clone(),
+                    error: format!("Tool not found: {}", tool_name),
                 });
                 stop_reason = PlanStopReason::ToolNotFound;
                 break;
             }
 
             // 检查依赖
-            if let Some(dep_order) = step.depends_on {
-                if let Some(dep_output) = context.get_output(dep_order) {
+            for &dep_order in &step.depends_on {
+                if context.get_output(dep_order).is_some() {
                     debug!(
-                        "PlanExecutor: step {} depends on step {}, output length={}",
-                        step.order,
-                        dep_order,
-                        dep_output.len()
+                        "PlanExecutor: step {} depends on step {}, output available",
+                        step.order, dep_order
                     );
                 } else {
                     error!(
@@ -318,236 +386,109 @@ impl PlanExecutor {
                     );
                     self.emit(PlanStreamEvent::StepError {
                         step: step.order,
-                        tool: step.tool_name.clone(),
+                        tool: tool_name.clone(),
                         error: format!("Dependency step {} not found", dep_order),
                     });
                     stop_reason = PlanStopReason::DependencyFailed;
                     break;
                 }
             }
+            if matches!(stop_reason, PlanStopReason::DependencyFailed) {
+                break;
+            }
 
             // 执行步骤（根据 step_type 分发）
             self.emit(PlanStreamEvent::StepStart {
                 step: step.order,
-                tool: step.tool_name.clone(),
+                tool: tool_name,
                 goal: step.step_goal.clone(),
             });
 
+            let step_order = step.order;
             let start_time = Instant::now();
-            let result = match step.step_type {
+
+            // 根据步骤类型执行
+            let executed_step: PlanStep = match step.step_type {
                 StepType::Deterministic => {
                     tracing::debug!("确定性步骤：直接执行 {:?}", step);
-                    execute_step(&self.tool_executor, step, &context).await
+                    execute_step(&self.tool_executor, step, &context).await?
+                }
+                StepType::Reasoning => {
+                    tracing::debug!("推理性步骤：调用 LLM 生成内容 {:?}", step);
+                    // Reasoning 步骤由 LLM 推理生成内容，无工具调用
+                    // TODO: 实现 reasoning 专用执行逻辑（调用 LLM 生成文本内容）
+                    execute_step(&self.tool_executor, step, &context).await?
                 }
                 StepType::Exploratory => {
                     tracing::debug!("探索性步骤：调用 LLM 决定工具 {:?}", step);
+
+                    // 检查是否配置了 model
+                    if self.model.is_empty() {
+                        return Err(PlanError::ToolError(ToolExecError {
+                            name: "exploratory".to_string(),
+                            message: "Exploratory step requires model to be configured".to_string(),
+                        }));
+                    }
+
+                    // 传入 context（包含历史记录）用于构建上下文
                     execute_exploratory_step(
                         &self.llm_provider,
                         self.tool_executor.clone(),
                         &self.available_tools,
-                        step,
                         &context,
+                        step,
+                        abort_flag.clone(),
+                        &self.model,
+                        self.max_exploratory_calls,
                     )
-                    .await
+                    .await?
                 }
             };
+
             let duration_ms = start_time.elapsed().as_millis() as u64;
 
-            match result {
-                Ok(output) => {
-                    let output_len = output.len();
-                    debug!(
-                        "PlanExecutor: step {} completed, output length={}",
-                        step.order,
-                        output_len
-                    );
+            // 从 executed_step.actions 提取最后一个 output
+            let output = executed_step
+                .actions
+                .last()
+                .and_then(|a| a.output.as_ref())
+                .map(|s| s.as_str())
+                .unwrap_or("")
+                .to_string();
 
-                    let step_result = StepResult {
-                        order: step.order,
-                        tool_name: step.tool_name.clone(),
-                        success: true,
-                        output: output.clone(),
-                        duration_ms,
-                    };
+            let output_len = output.len();
+            let tool_name = executed_step
+                .actions
+                .first()
+                .map(|a| a.tool_name.as_str())
+                .unwrap_or("（无工具）")
+                .to_string();
 
-                    context.results.push(step_result);
+            debug!(
+                "PlanExecutor: step {} completed, tool={}, output length={}",
+                executed_step.order,
+                tool_name,
+                output_len
+            );
 
-                    // 如果是最后一步，收集输出作为最终回复
-                    if step.order == total_steps {
-                        final_reply = output;
-                    }
+            // 更新 sorted_steps
+            sorted_steps[idx] = executed_step.clone();
+            context.push(executed_step.clone());
 
-                    self.emit(PlanStreamEvent::StepComplete {
-                        step: step.order,
-                        success: true,
-                        duration_ms,
-                        output_length: output_len,
-                    });
-                }
-                Err(e) => {
-                    error!("PlanExecutor: step {} failed: {}", step.order, e);
-
-                    // 混合模式：尝试让 LLM 分析并决定后续动作
-                    let decision = self.handle_step_failure(step, &e, &context).await;
-
-                    match decision {
-                        Ok(LlmDecision { analysis, action }) => {
-                            info!(
-                                "PlanExecutor: LLM decision for step {} - analysis: {}, action: {:?}",
-                                step.order, analysis, action
-                            );
-
-                            match action {
-                                StepAction::Retry { new_parameters } => {
-                                    // 重试步骤
-                                    let retry_params =
-                                        new_parameters.unwrap_or_else(|| step.parameters.clone());
-                                    let retry_step = PlanStep {
-                                        order: step.order,
-                                        step_type: step.step_type,
-                                        tool_name: step.tool_name.clone(),
-                                        parameters: retry_params,
-                                        step_goal: step.step_goal.clone(),
-                                        expected_output: step.expected_output.clone(),
-                                        depends_on: step.depends_on,
-                                    };
-                                    match execute_step(
-                                        &self.tool_executor,
-                                        &retry_step,
-                                        &context,
-                                    )
-                                    .await
-                                    {
-                                        Ok(output) => {
-                                            let step_result = StepResult {
-                                                order: step.order,
-                                                tool_name: step.tool_name.clone(),
-                                                success: true,
-                                                output: format!("[重试成功] {}", output),
-                                                duration_ms,
-                                            };
-                                            context.results.pop(); // 移除失败的记录
-                                            context.results.push(step_result);
-                                            if step.order == total_steps {
-                                                final_reply = output.clone();
-                                            }
-                                            self.emit(PlanStreamEvent::StepComplete {
-                                                step: step.order,
-                                                success: true,
-                                                duration_ms,
-                                                output_length: output.len(),
-                                            });
-                                            continue;
-                                        }
-                                        Err(_) => {
-                                            // 重试也失败，标记为失败
-                                            stop_reason = PlanStopReason::PartialFailure;
-                                        }
-                                    }
-                                }
-                                StepAction::Skip { reason } => {
-                                    // 跳过当前步骤
-                                    info!(
-                                        "PlanExecutor: skipping step {} - {}",
-                                        step.order, reason
-                                    );
-                                    let step_result = StepResult {
-                                        order: step.order,
-                                        tool_name: step.tool_name.clone(),
-                                        success: false,
-                                        output: format!("[已跳过] {}", reason),
-                                        duration_ms,
-                                    };
-                                    context.results.pop();
-                                    context.results.push(step_result);
-                                    continue;
-                                }
-                                StepAction::ChangeTool {
-                                    tool_name,
-                                    parameters,
-                                    reason: _,
-                                } => {
-                                    // 更换工具
-                                    let new_step = PlanStep {
-                                        order: step.order,
-                                        step_type: step.step_type,
-                                        tool_name,
-                                        parameters,
-                                        step_goal: step.step_goal.clone(),
-                                        expected_output: step.expected_output.clone(),
-                                        depends_on: step.depends_on,
-                                    };
-                                    match execute_step(
-                                        &self.tool_executor,
-                                        &new_step,
-                                        &context,
-                                    )
-                                    .await
-                                    {
-                                        Ok(output) => {
-                                            let step_result = StepResult {
-                                                order: step.order,
-                                                tool_name: new_step.tool_name.clone(),
-                                                success: true,
-                                                output: format!("[更换工具成功] {}", output),
-                                                duration_ms,
-                                            };
-                                            context.results.pop();
-                                            context.results.push(step_result);
-                                            if step.order == total_steps {
-                                                final_reply = output.clone();
-                                            }
-                                            self.emit(PlanStreamEvent::StepComplete {
-                                                step: step.order,
-                                                success: true,
-                                                duration_ms,
-                                                output_length: output.len(),
-                                            });
-                                            continue;
-                                        }
-                                        Err(_) => {
-                                            stop_reason = PlanStopReason::PartialFailure;
-                                        }
-                                    }
-                                }
-                                StepAction::Abort { reason } => {
-                                    // 中止计划
-                                    info!("PlanExecutor: aborting plan - {}", reason);
-                                    stop_reason = PlanStopReason::PartialFailure;
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            // 无法获取 LLM 决策，降级为直接失败
-                            warn!(
-                                "PlanExecutor: LLM decision unavailable, marking as failure"
-                            );
-                        }
-                    }
-
-                    let step_result = StepResult {
-                        order: step.order,
-                        tool_name: step.tool_name.clone(),
-                        success: false,
-                        output: format!("Error: {}", e),
-                        duration_ms,
-                    };
-
-                    context.results.push(step_result);
-
-                    self.emit(PlanStreamEvent::StepError {
-                        step: step.order,
-                        tool: step.tool_name.clone(),
-                        error: e.to_string(),
-                    });
-
-                    stop_reason = PlanStopReason::PartialFailure;
-                    break;
-                }
+            // 如果是最后一步，收集输出作为最终回复
+            if step_order == total_steps {
+                final_reply = output;
             }
+
+            self.emit(PlanStreamEvent::StepComplete {
+                step: step_order,
+                success: true,
+                duration_ms,
+                output_length: output_len,
+            });
         }
 
-        let completed_steps = context.results.len() as u8;
+        let completed_steps = context.get_executed_steps().len() as u8;
 
         self.emit(PlanStreamEvent::PlanComplete {
             completed_steps,
@@ -560,177 +501,32 @@ impl PlanExecutor {
             completed_steps,
             total_steps,
             final_reply,
-            step_results: context.results,
+            step_results: context
+                .get_executed_steps()
+                .iter()
+                .map(|s| {
+                    let tool_name = s
+                        .actions
+                        .first()
+                        .map(|a| a.tool_name.clone())
+                        .unwrap_or_default();
+                    let output = s
+                        .actions
+                        .last()
+                        .and_then(|a| a.output.as_ref())
+                        .map(|o| o.clone())
+                        .unwrap_or_default();
+                    StepResult {
+                        order: s.order,
+                        tool_name,
+                        success: true,
+                        output,
+                        duration_ms: 0, // 不再追踪 duration_ms
+                    }
+                })
+                .collect(),
             stop_reason,
         })
-    }
-
-    /// 处理步骤失败（混合模式核心）
-    ///
-    /// 当步骤执行失败时，调用 LLM 分析原因并生成决策
-    async fn handle_step_failure(
-        &self,
-        step: &PlanStep,
-        error: &PlanError,
-        context: &StepContext,
-    ) -> Result<LlmDecision, PlanError> {
-        // 如果没有配置 LLM Provider，直接返回错误
-        let Some(llm) = &self.llm_provider else {
-            warn!("PlanExecutor: no LLM provider configured for failure analysis");
-            return Err(PlanError::ToolError(ToolExecError {
-                name: step.tool_name.clone(),
-                message: "LLM provider not available".to_string(),
-            }));
-        };
-
-        // 构建分析请求的消息
-        let error_info = format!(
-            "工具: {}\n步骤目标: {}\n参数: {}\n错误: {}",
-            step.tool_name,
-            step.step_goal,
-            serde_json::to_string(&step.parameters).unwrap_or_default(),
-            error
-        );
-
-        // 构建历史信息
-        let history = context
-            .results
-            .iter()
-            .map(|r| {
-                format!(
-                    "步骤{} ({}): {}",
-                    r.order,
-                    r.tool_name,
-                    if r.success {
-                        format!("成功，长度={}", r.output.len())
-                    } else {
-                        r.output.clone()
-                    }
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let user_message = format!(
-            r#"【步骤执行失败】
-{error_info}
-
-【已完成步骤】
-{history}
-
-【可用工具】
-{available_tools}
-
-请分析失败原因，并决定后续动作（JSON 格式）：
-{{
-    "analysis": "分析说明",
-    "action": {{
-        "retry": {{"new_parameters": {{"参数": "值"}}}}  | 
-        "skip": {{"reason": "跳过原因"}} | 
-        "change_tool": {{"tool_name": "新工具名", "parameters": {{}}, "reason": "更换原因"}} | 
-        "abort": {{"reason": "中止原因"}}
-    }}
-}}
-
-注意：如果步骤不是关键的，可以选择 skip；如果参数有问题，可以 retry 并修正参数；如果工具不可用，可以 change_tool；如果问题无法解决，选择 abort。"#,
-            error_info = error_info,
-            history = if history.is_empty() { "（无）" } else { &history },
-            available_tools = self.available_tools.join(", ")
-        );
-
-        let messages = vec![
-            ChatMessage::new(
-                Role::System,
-                "你是一个智能助手，负责在工具执行失败时分析原因并决定后续动作。请只返回 JSON，不要其他文字。",
-            ),
-            ChatMessage::new(Role::User, &user_message),
-        ];
-
-        // 调用 LLM 获取决策
-        let analyzer = IntentAnalyzer::new(llm.clone());
-        let response = analyzer
-            .decision_raw(messages, vec![])
-            .await
-            .map_err(|e| PlanError::ToolError(ToolExecError {
-                name: step.tool_name.clone(),
-                message: format!("LLM decision failed: {}", e),
-            }))?;
-
-        // 解析 LLM 返回的决策
-        let decision = self.parse_llm_decision(&response)?;
-        Ok(decision)
-    }
-
-    /// 解析 LLM 决策响应
-    fn parse_llm_decision(&self, response: &str) -> Result<LlmDecision, PlanError> {
-        // 提取 JSON（可能有 markdown 格式）
-        let json_str = if response.contains('{') {
-            let start = response.find('{').unwrap();
-            let end = response.rfind('}').unwrap_or(response.len() - 1);
-            &response[start..=end]
-        } else {
-            response
-        };
-
-        let json: Value = serde_json::from_str(json_str)
-            .map_err(|e| PlanError::ToolError(ToolExecError {
-                name: "llm_decision".to_string(),
-                message: format!("Failed to parse LLM decision: {}", e),
-            }))?;
-
-        let analysis = json
-            .get("analysis")
-            .and_then(|v| v.as_str())
-            .unwrap_or("无分析")
-            .to_string();
-
-        let action = json
-            .get("action")
-            .ok_or_else(|| PlanError::ToolError(ToolExecError {
-                name: "llm_decision".to_string(),
-                message: "Missing 'action' field in LLM decision".to_string(),
-            }))?;
-
-        // 解析动作类型
-        if let Some(retry) = action.get("retry") {
-            let new_parameters = retry.get("new_parameters").map(|v| v.clone());
-            return Ok(LlmDecision::retry(analysis, new_parameters));
-        } else if let Some(skip) = action.get("skip") {
-            let reason = skip
-                .get("reason")
-                .and_then(|v| v.as_str())
-                .unwrap_or("未知原因")
-                .to_string();
-            return Ok(LlmDecision::skip(reason));
-        } else if let Some(change) = action.get("change_tool") {
-            let tool_name = change
-                .get("tool_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let parameters = change
-                .get("parameters")
-                .cloned()
-                .unwrap_or(serde_json::json!({}));
-            let reason = change
-                .get("reason")
-                .and_then(|v| v.as_str())
-                .unwrap_or("工具不可用")
-                .to_string();
-            return Ok(LlmDecision::change_tool(tool_name, parameters, reason));
-        } else if let Some(abort) = action.get("abort") {
-            let reason = abort
-                .get("reason")
-                .and_then(|v| v.as_str())
-                .unwrap_or("无法解决")
-                .to_string();
-            return Ok(LlmDecision::abort(reason));
-        }
-
-        Err(PlanError::ToolError(ToolExecError {
-            name: "llm_decision".to_string(),
-            message: "Invalid action type in LLM decision".to_string(),
-        }))
     }
 }
 

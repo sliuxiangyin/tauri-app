@@ -22,7 +22,7 @@ use crate::provider::llm::content_type_sender::ContentTypeSender;
 use crate::provider::llm::llm_tool_trait::ToolExecutor;
 use crate::provider::llm::{
     types::{ChatMessage as LlmChatMessage, ChatRequest, Role},
-    IntentAnalyzer, LlmProvider, LlmStreamEvent, LlmStreamSender, PlanExecutor, Provider,
+    IntentAnalyzer, LlmProvider, LlmStreamEvent, LlmStreamSender, PlanExecutor,
 };
 use crate::services::chat_model_service::ChatModelService;
 use crate::services::chat_tools_service;
@@ -168,17 +168,9 @@ impl LlmService {
             }
         };
 
-        // 6. 创建 Provider
-        let provider = Provider::try_from(provider_config.clone()).map_err(|e| e.to_string())?;
-        let provider = match provider {
-            Provider::OpenAiCompatible(p) => {
-                Arc::new(p.with_model(model_id.clone())) as Arc<dyn LlmProvider>
-            }
-            Provider::Anthropic(p) => {
-                Arc::new(p.with_model(model_id.clone())) as Arc<dyn LlmProvider>
-            }
-            Provider::Ollama(p) => Arc::new(p.with_model(model_id.clone())) as Arc<dyn LlmProvider>,
-        };
+        // 6. 创建 Provider(委托给 dispatcher::create_llm_provider 工厂函数)
+        let provider = crate::provider::llm::dispatcher::create_llm_provider(provider_config, &model_id)
+            .map_err(|e| e.to_string())?;
 
         // 7. 获取启用的工具列表
         let tools = chat_tools_service::get_enabled_tools_from_client(
@@ -329,10 +321,9 @@ impl LlmService {
 
         // 3. 执行 Agent 循环
         let executor: Arc<dyn ToolExecutor> = Arc::new(McpToolExecutor::new(mcp));
-        let tool_names: Vec<String> = tools.iter().map(|t| t.function.name.clone()).collect();
 
         let plan_executor: PlanExecutor = PlanExecutor::new(executor)
-            .with_available_tools(tool_names)
+            .with_available_tools(tools)
             .with_llm_provider(provider)
             .with_max_retries(2);
 
@@ -436,6 +427,15 @@ fn plan_stop_reason_to_str(
 }
 
 /// 分析用户意图
+///
+/// TODO(plan-module): 等待独立的 Plan 生成模块就绪后替换为：
+///   1. `IntentAnalyzer::analyze` 仅产出 `IntentResponse { need_agent, reasoning }`
+///   2. 当 `need_agent = true` 时，调用 Plan 生成模块把 `reasoning` 展开为 `IntentPlan.steps`
+///   3. 当 `need_agent = false` 时，直接走 simple 模式
+///
+/// 当前为过渡实现：把 `IntentResponse` 直接包装成 `steps` 为空的 `IntentPlan`，
+/// Agent 模式会因 steps 为空而自动降级为 simple 模式（不破坏运行），并打印 warning 提示。
+#[allow(unused_variables)]
 async fn analyze_intent(
     provider: &Arc<dyn LlmProvider>,
     model_id: &str,
@@ -443,10 +443,31 @@ async fn analyze_intent(
     available_tools: &[crate::provider::llm::types::ToolDefinition],
 ) -> Result<crate::provider::llm::types::IntentPlan, String> {
     let analyzer = IntentAnalyzer::new(provider.clone()).with_model(model_id.to_string());
-    analyzer
-        .analyze(messages.to_vec(), available_tools.to_vec())
+    let response = analyzer
+        .analyze(messages.to_vec())
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    if response.need_agent {
+        tracing::warn!(
+            "[LlmService] need_agent=true 但 Plan 生成模块尚未实现, \
+             暂时降级为 simple 模式. reasoning={}",
+            response.reasoning
+        );
+    } else {
+        tracing::info!(
+            "[LlmService] 意图判断: need_agent=false, reasoning={}",
+            response.reasoning
+        );
+    }
+
+    // 临时数据：把 IntentResponse 包装成 IntentPlan，steps 为空。
+    // 后续接入 Plan 生成模块时,只需把 steps 填上即可。
+    Ok(crate::provider::llm::types::IntentPlan {
+        need_agent: response.need_agent,
+        reasoning: response.reasoning,
+        steps: Vec::new(),
+    })
 }
 
 // ──────────────────────────────────────────────────────────────

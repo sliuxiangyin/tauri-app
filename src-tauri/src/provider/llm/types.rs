@@ -169,25 +169,21 @@ fn default_temperature() -> f32 {
     1.0
 }
 
-/// 计划步骤 - 代表一个可执行的操作单元
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlanStep {
-    /// 步骤序号（从 1 开始）
-    pub order: u8,
-    /// 步骤类型
-    #[serde(default)]
-    pub step_type: StepType,
-    /// 工具名称（完整格式，如 "mcp__server__tool"，exploratory 时可选）
-    pub tool_name: String,
-    /// 工具调用参数（JSON 对象）
-    pub parameters: serde_json::Value,
-    /// 本步骤目标描述
-    pub step_goal: String,
-    /// 期望输出（用于验证步骤是否成功）
-    pub expected_output: Option<String>,
-    /// 依赖的前置步骤序号
-    pub depends_on: Option<u8>,
-}
+/// 计划步骤 - 代表一个可执行的宏观意图单元
+///
+/// 描述高层目标（如"完成搜索"、"提取结果"），具体操作由 ReAct 执行时动态生成 SubAction
+///
+/// > 结构体定义已迁移到 [`crate::provider::llm::prompts::plans_prompt`] 模块，
+/// > 此处通过 `pub use` 重新导出以保持向后兼容。
+pub use crate::provider::llm::prompts::plans_prompt::PlanStep;
+
+/// 子动作 - ReAct 模式下的具体操作单元
+///
+/// 由 LLM 在执行时动态决定并执行，记录到 actions 列表中供后续步骤参考
+///
+/// > 结构体定义已迁移到 [`crate::provider::llm::prompts::plans_prompt`] 模块，
+/// > 此处通过 `pub use` 重新导出以保持向后兼容。
+pub use crate::provider::llm::prompts::plans_prompt::SubAction;
 
 /// 意图计划 - LLM 识别后的执行计划
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -221,46 +217,8 @@ impl IntentPlan {
     }
 }
 
-#[allow(dead_code)]
-impl PlanStep {
-    /// 创建新的计划步骤（默认确定性类型）
-    pub fn new(order: u8, tool_name: impl Into<String>, step_goal: impl Into<String>) -> Self {
-        Self {
-            order,
-            step_type: StepType::Deterministic,
-            tool_name: tool_name.into(),
-            parameters: serde_json::json!({}),
-            step_goal: step_goal.into(),
-            expected_output: None,
-            depends_on: None,
-        }
-    }
-
-    /// 创建探索性步骤
-    pub fn exploratory(order: u8, step_goal: impl Into<String>) -> Self {
-        Self {
-            order,
-            step_type: StepType::Exploratory,
-            tool_name: String::new(),
-            parameters: serde_json::json!({}),
-            step_goal: step_goal.into(),
-            expected_output: None,
-            depends_on: None,
-        }
-    }
-
-    /// 设置期望输出
-    pub fn with_expected_output(mut self, output: impl Into<String>) -> Self {
-        self.expected_output = Some(output.into());
-        self
-    }
-
-    /// 设置依赖的前置步骤
-    pub fn with_dependency(mut self, depends_on: u8) -> Self {
-        self.depends_on = Some(depends_on);
-        self
-    }
-}
+// 注意：PlanStep / SubAction 结构体及其方法已迁移到 provider::llm::prompts::plans_prompt
+// 此处通过 pub use 重新导出以保持向后兼容（`use crate::provider::llm::types::PlanStep` 仍然有效）
 
 /// Payload from the frontend to select a provider and credentials (per request).
 ///
