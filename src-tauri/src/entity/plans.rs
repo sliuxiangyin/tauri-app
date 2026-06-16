@@ -220,6 +220,7 @@ impl UpdatePlanPayload {
             crate::provider::llm::agent::plan_executor::PlanStopReason::UserAbort => "user_abort",
             crate::provider::llm::agent::plan_executor::PlanStopReason::DependencyFailed => "dependency_failed",
             crate::provider::llm::agent::plan_executor::PlanStopReason::ToolNotFound => "tool_not_found",
+            crate::provider::llm::agent::plan_executor::PlanStopReason::MaxRetriesExceeded => "max_retries_exceeded",
         };
         Self {
             step_results: step_results_json,

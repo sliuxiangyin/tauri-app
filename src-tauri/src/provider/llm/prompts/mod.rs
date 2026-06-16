@@ -10,7 +10,9 @@ pub mod plans_prompt;
 pub use exploratory_prompt::{
     build_exploratory_initial_message,
     build_history_summary, build_goal_check_message, parse_goal_check_response,
-    exploratory_system_prompt, goal_check_system_prompt,
+    re_act_system_prompt, goal_check_system_prompt,
+    replan_system_prompt, build_replan_message, parse_replan_response,
+    reasoning_system_prompt, build_reasoning_message,
 };
 
 #[allow(unused_imports)]

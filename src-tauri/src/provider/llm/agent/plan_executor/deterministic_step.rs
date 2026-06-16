@@ -3,23 +3,27 @@
 //! 负责执行步骤类型为 `Deterministic` 的计划步骤，调用工具执行器完成实际工具调用。
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use serde_json::{Map, Value};
 
+use super::types::StepExecResult;
 use super::{PlanError, StepContext};
 use crate::provider::llm::llm_tool_trait::ToolExecutor;
-use crate::provider::llm::types::{FunctionCall, PlanStep, SubAction};
+use crate::provider::llm::types::{FunctionCall, PlanStep};
 
 /// 执行确定性步骤
 ///
 /// - 从 actions[0] 获取 tool_name 和 parameters
 /// - 调用 tool_executor 执行工具
 /// - 将执行结果更新到 actions[0].output
-pub(crate) async fn execute_step(
+pub(crate) async fn execute_deterministic_step(
     tool_executor: &Arc<dyn ToolExecutor>,
     step: &PlanStep,
     context: &StepContext,
-) -> Result<PlanStep, PlanError> {
+) -> Result<StepExecResult, PlanError> {
+    let start_time = Instant::now();
+
     // 1. 从 actions 列表获取第一个 SubAction（确定性步骤的初始动作）
     let first_action = step.actions.first().ok_or_else(|| {
         PlanError::ToolError(crate::provider::llm::llm_tool_trait::ToolExecError {
@@ -72,15 +76,20 @@ pub(crate) async fn execute_step(
         first.output = Some(output.clone());
     }
 
-    // 6. 返回更新后的 PlanStep
-    Ok(PlanStep {
-        order: step.order,
-        step_type: step.step_type,
-        step_goal: step.step_goal.clone(),
-        expected_output: step.expected_output.clone(),
-        depends_on: step.depends_on.clone(),
-        input: step.input.clone(),
-        success_criteria: step.success_criteria.clone(),
-        actions: updated_actions,
+    let duration_ms = start_time.elapsed().as_millis() as u64;
+
+    // 6. 返回 StepExecResult
+    Ok(StepExecResult {
+        step: PlanStep {
+            order: step.order,
+            step_type: step.step_type,
+            step_goal: step.step_goal.clone(),
+            expected_output: step.expected_output.clone(),
+            depends_on: step.depends_on.clone(),
+            input: step.input.clone(),
+            success_criteria: step.success_criteria.clone(),
+            actions: updated_actions,
+        },
+        duration_ms,
     })
 }

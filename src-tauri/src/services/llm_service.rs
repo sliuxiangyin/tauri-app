@@ -328,7 +328,7 @@ impl LlmService {
             .with_max_retries(2);
 
         let plan_result = plan_executor
-            .execute_plan(intent_plan, abort_flag)
+            .execute_plan(intent_plan.steps, abort_flag)
             .await
             .map_err(|e| e.to_string());
 
@@ -422,6 +422,9 @@ fn plan_stop_reason_to_str(
         }
         crate::provider::llm::agent::plan_executor::PlanStopReason::ToolNotFound => {
             "tool_not_found".to_string()
+        }
+        crate::provider::llm::agent::plan_executor::PlanStopReason::MaxRetriesExceeded => {
+            "max_retries_exceeded".to_string()
         }
     }
 }

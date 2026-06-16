@@ -17,10 +17,11 @@ mod tests {
     use std::sync::Arc;
 
     use crate::provider::llm::PlanExecutor;
-    use crate::provider::llm::agent::plan_executor::{PlanEventCallback, PlanStreamEvent};
+    use crate::provider::llm::agent::plan_executor::{
+        PlanEventCallback, PlanResult, PlanStreamEvent,
+    };
     use crate::provider::llm::providers::openai_compatible::OpenAiCompatible;
-    use crate::provider::llm::agent::analyzer::IntentAnalyzer;
-    use crate::provider::llm::types::{ChatMessage, IntentPlan, PlanStep, Role, ToolDefinition};
+    use crate::provider::llm::types::{ChatMessage, PlanStep, Role, StepType, ToolDefinition};
     use crate::provider::mcp::{McpManager, TransportConfig};
     use crate::services::llm::tool_executor::McpToolExecutor;
 
@@ -152,34 +153,91 @@ mod tests {
         ]
     }
 
-    /// 构建百度搜索场景的计划
-    ///
-    /// 使用 `PlanStep::exploratory` 构造器（带 builder 方法）创建探索性步骤，
-    /// 避免使用已不存在的 `tool_name` / `parameters` 顶层字段（这些字段已迁移到 `SubAction`）。
-    fn build_baidu_search_plan() -> IntentPlan {
-        let steps = vec![
-            PlanStep::exploratory(1, "打开百度首页")
-                .with_expected_output("百度首页已加载"),
-            PlanStep::exploratory(2, "在搜索框中输入'安仁乡'并搜索")
-                .with_expected_output("搜索结果页面已加载")
-                .with_dependency(1),
-            PlanStep::exploratory(3, "提取前三个搜索结果的标题和链接")
-                .with_expected_output("前三个搜索结果的列表")
-                .with_dependency(2),
-        ];
-        IntentPlan::agent(steps, "百度搜索场景")
+    // =============================================================================
+    // 测试用例
+    // =============================================================================
+
+    /// 构建测试用的 5 步计划：3 个 Exploratory（浏览器操作）+ 2 个 Reasoning（提取+格式化）
+    fn build_test_plan() -> Vec<PlanStep> {
+        vec![
+            PlanStep {
+                order: 1,
+                step_type: StepType::Exploratory,
+                step_goal: "打开浏览器并导航到搜索引擎首页（如百度）".to_string(),
+                expected_output: Some("浏览器已打开并显示出搜索引擎首页".to_string()),
+                depends_on: vec![],
+                input: vec![],
+                success_criteria: vec![
+                    "成功打开浏览器并访问搜索引擎首页".to_string(),
+                    "页面加载完成".to_string(),
+                ],
+                actions: vec![],
+            },
+            PlanStep {
+                order: 2,
+                step_type: StepType::Exploratory,
+                step_goal: "在搜索框中输入「达州」并提交搜索".to_string(),
+                expected_output: Some("完成搜索".to_string()),
+                depends_on: vec![1],
+                input: vec!["step_1.output".to_string()],
+                success_criteria: vec![
+                    "成功输入搜索词并触发搜索".to_string(),
+                    "搜索结果页面加载完毕".to_string(),
+                ],
+                actions: vec![],
+            },
+            PlanStep {
+                order: 3,
+                step_type: StepType::Exploratory,
+                step_goal: "获取搜索结果页面的页面内容（如通过快照或网络请求）".to_string(),
+                expected_output: Some("页面内容数据（如HTML结构或快照）".to_string()),
+                depends_on: vec![2],
+                input: vec!["step_2.output".to_string()],
+                success_criteria: vec![
+                    "成功获取页面内容".to_string(),
+                    "内容包含搜索结果区域".to_string(),
+                ],
+                actions: vec![],
+            },
+            PlanStep {
+                order: 4,
+                step_type: StepType::Reasoning,
+                step_goal: "从页面内容中提取前三条搜索结果的标题和链接".to_string(),
+                expected_output: Some("前三条搜索结果的标题和链接列表".to_string()),
+                depends_on: vec![3],
+                input: vec!["step_3.output".to_string()],
+                success_criteria: vec![
+                    "成功提取至少三条搜索结果".to_string(),
+                    "结果格式为可读列表".to_string(),
+                ],
+                actions: vec![],
+            },
+            PlanStep {
+                order: 5,
+                step_type: StepType::Reasoning,
+                step_goal: "格式化并返回前三条搜索结果".to_string(),
+                expected_output: Some("最终结果：前三条搜索结果的文本描述".to_string()),
+                depends_on: vec![4],
+                input: vec!["step_4.output".to_string()],
+                success_criteria: vec![
+                    "成功生成包含前三条搜索结果的最终报告".to_string(),
+                    "任务完成".to_string(),
+                ],
+                actions: vec![],
+            },
+        ]
     }
 
-    // =============================================================================
-    // 真实服务集成测试 - 意图分析
-    // =============================================================================
-
-    /// 测试：使用真实 LLM + 真实 MCP 工具进行意图分析
+    /// 测试：execute_plan 执行 5 步混合计划（3 Exploratory + 2 Reasoning）
     ///
-    /// 运行: `MCP_SERVERS=playwright=npx:@playwright/mcp@latest cargo test --lib -- --ignored test_intent_analyze_with_llm`
+    /// 运行：
+    /// ```text
+    /// MCP_SERVERS=playwright=npx:@playwright/mcp@latest \
+    /// OPENAI_API_KEY=xxx \
+    /// cargo test --lib -- --ignored services::llm::plan_executor_test::test_execute_plan
+    /// ```
     #[tokio::test]
-    #[ignore]
-    async fn test_intent_analyze_with_llm() {
+    async fn test_execute_plan() {
         // 初始化 tracing
         let _ = tracing_subscriber::fmt()
             .with_env_filter(
@@ -188,208 +246,132 @@ mod tests {
             )
             .try_init();
 
-        tracing::debug!("[STEP 1] 加载配置1...");
+        tracing::info!("[STEP 1] 加载 LLM 配置...");
         let (base_url, api_key, model) = load_llm_config();
-        let configs = load_mcp_config();
-        tracing::debug!("使用模型: {} @ {}", model, base_url);
+        tracing::info!("使用模型: {} @ {}", model, base_url);
 
-        // 创建 LLM Provider
-        tracing::debug!("[STEP 2] 创建 LLM Provider...");
-        let llm_provider = OpenAiCompatible::new(base_url, api_key)
-            .with_model(model.clone());
+        tracing::info!("[STEP 2] 创建 LLM Provider...");
+        let provider = OpenAiCompatible::new(base_url, api_key).with_model(model.clone());
+        let provider: Arc<dyn crate::provider::llm::providers::LlmProvider> = Arc::new(provider);
+        tracing::info!("[STEP 2] Provider 创建成功");
 
-        // 获取可用工具
+        tracing::info!("[STEP 3] 连接 MCP 并构建工具执行器...");
+        let mcp_configs = load_mcp_config();
         let mcp_manager = Arc::new(McpManager::new());
-        let mut available_tools: Vec<ToolDefinition> = Vec::new();
+        for (name, config) in &mcp_configs {
+            if let Err(e) = mcp_manager.connect(name, config.clone()).await {
+                tracing::warn!("连接 MCP {} 失败: {:?}", name, e);
+            }
+        }
+        // McpManager 实现 McpClient trait，需包装成 Arc<dyn McpClient>
+        let mcp_client: Arc<dyn crate::services::traits::McpClient> = mcp_manager.clone();
+        let tool_executor: Arc<dyn crate::provider::llm::llm_tool_trait::ToolExecutor> =
+            Arc::new(McpToolExecutor::new(mcp_client));
 
-        if !configs.is_empty() {
-            tracing::debug!("[STEP 3] 连接 MCP 服务...");
-            for (name, config) in &configs {
-                println!("  连接: {}", name);
-                match mcp_manager.connect(name, config.clone()).await {
-                    Ok(status) => {
-                        println!("    连接成功: {:?}", status);
-                        match mcp_manager.get_tools(name).await {
-                            Ok(tools) => {
-                                println!("    发现 {} 个工具", tools.len());
-                                for tool in &tools {
-                                    let tool_name = format!("mcp__{}__{}", name, tool.name);
-                                    let input_schema = serde_json::Value::Object((*tool.input_schema).clone());
-                                    available_tools.push(ToolDefinition::from_mcp(
-                                        &tool_name,
-                                        tool.description.as_deref(),
-                                        input_schema,
-                                    ));
-                                }
-                            }
-                            Err(e) => println!("    获取工具失败: {:?}", e),
-                        }
-                    }
-                    Err(e) => println!("    连接失败: {:?}", e),
+        // 收集工具定义
+        let mut available_tools: Vec<ToolDefinition> = Vec::new();
+        for (name, _) in &mcp_configs {
+            if let Ok(tools) = mcp_manager.get_tools(name).await {
+                for tool in &tools {
+                    let tool_name = format!("mcp__{}__{}", name, tool.name);
+                    let input_schema =
+                        serde_json::Value::Object((*tool.input_schema).clone());
+                    available_tools.push(ToolDefinition::from_mcp(
+                        &tool_name,
+                        tool.description.as_deref(),
+                        input_schema,
+                    ));
                 }
             }
         }
-
-        // 无 MCP 时使用默认工具
         if available_tools.is_empty() {
-            tracing::debug!("无可用 MCP 工具，使用默认工具列表");
             available_tools = get_default_tools();
         }
+        tracing::info!("[STEP 3] 可用工具数量: {}", available_tools.len());
 
+        tracing::info!("[STEP 4] 创建事件收集器...");
+        let (events_arc, callback) = create_event_collector();
 
-        // 创建 IntentAnalyzer
-        println!("\n[STEP 4] 创建 IntentAnalyzer...");
-        let analyzer = IntentAnalyzer::new(Arc::new(llm_provider)).with_model(model.clone());
+        tracing::info!("[STEP 5] 创建 PlanExecutor...");
+        let plan_executor = PlanExecutor::new(tool_executor)
+            .with_llm_provider(provider)
+            .with_model(model.clone())
+            .with_available_tools(available_tools)
+            .with_event_callback(callback)
+            .with_max_retries(2)
+            .with_max_exploratory_calls(5);
 
-        // 构建测试消息
-        let messages = create_user_message("打开百度，输入安仁乡，获取前三条搜索结果");
+        tracing::info!("[STEP 6] 构建测试计划 (5 steps)...");
+        let steps = build_test_plan();
+        assert_eq!(steps.len(), 5, "测试计划应包含 5 个步骤");
+        assert_eq!(steps[0].step_type, StepType::Exploratory);
+        assert_eq!(steps[3].step_type, StepType::Reasoning);
 
-        // 执行意图分析
-        println!("[STEP 5] 执行意图分析...");
-        // TODO(plan-module): analyzer.analyze 已移除 available_tools 参数;
-        // 工具选择属于 Plan / 执行阶段。available_tools 仍可连接以便后续 Plan 模块复用。
-        let result = analyzer.analyze(messages).await;
+        tracing::info!("[STEP 7] 执行计划...");
+        let abort_flag = Arc::new(AtomicBool::new(false));
+        let result: Result<PlanResult, _> = plan_executor
+            .execute_plan(steps, abort_flag)
+            .await;
 
-        // 打印结果
-        tracing::debug!("\n=== 意图分析结果 ===");
-        match result {
-            Ok(resp) => {
-                tracing::debug!("need_agent: {}", resp.need_agent);
-                tracing::debug!("reasoning: {}", resp.reasoning);
-                // TODO(plan-module): 当 Plan 生成模块就绪后,
-                // 这里会迭代 resp.reasoning 派生出的 steps。
+        tracing::info!("[STEP 8] 验证结果...");
+        match &result {
+            Ok(pr) => {
+                tracing::info!(
+                    "执行完成: {}/{}, stop_reason={:?}, final_reply={:?}",
+                    pr.completed_steps,
+                    pr.total_steps,
+                    pr.stop_reason,
+                    pr.final_reply
+                );
+                for sr in &pr.step_results {
+                    tracing::info!(
+                        "  步骤 {}: tool={}, success={}, output_len={:?}",
+                        sr.order,
+                        sr.tool_name,
+                        sr.success,
+                        sr.output
+                    );
+                }
+                assert_eq!(pr.total_steps, 5, "total_steps 应为 5");
+                assert!(
+                    pr.completed_steps >= 1,
+                    "至少应完成 1 个步骤，实际: {}",
+                    pr.completed_steps
+                );
             }
             Err(e) => {
-                tracing::debug!("  意图分析失败: {:?}", e);
+                tracing::error!("执行失败: {}", e);
+                panic!("execute_plan 失败: {}", e);
             }
         }
 
-        tracing::debug!("[STEP 6] 完成");
-    }
+        tracing::info!("[STEP 9] 验证事件流...");
+        let events = events_arc.lock().unwrap();
+        tracing::info!("事件总数: {}", events.len());
+        assert!(!events.is_empty(), "应至少发出 PlanStart 事件");
 
-    // =============================================================================
-    // 真实服务集成测试 - 计划执行
-    // =============================================================================
-
-    /// 测试：探索性步骤序列（百度搜索场景）
-    ///
-    /// 运行: `MCP_SERVERS=playwright=npx:@playwright/mcp@latest cargo test --lib -- --ignored test_plan_exploratory_with_llm`
-    #[tokio::test]
-    #[ignore]
-    async fn test_plan_exploratory_with_llm() {
-        // 初始化 tracing
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug")),
-            )
-            .try_init();
-
-        tracing::debug!("[STEP 1] 加载配置...");
-        let (base_url, api_key, model) = load_llm_config();
-        let configs = load_mcp_config();
-        tracing::debug!("使用模型: {} @ {}", model, base_url);
-
-        // 创建 LLM Provider
-        tracing::debug!("[STEP 2] 创建 LLM Provider...");
-        let llm_provider = OpenAiCompatible::new(base_url, api_key)
-            .with_model(model.clone());
-
-        // 获取可用工具
-        let mcp_manager = Arc::new(McpManager::new());
-        let mut available_tools: Vec<ToolDefinition> = Vec::new();
-
-        if !configs.is_empty() {
-            tracing::debug!("[STEP 3] 连接 MCP 服务...");
-            for (name, config) in &configs {
-                println!("  连接: {}", name);
-                match mcp_manager.connect(name, config.clone()).await {
-                    Ok(status) => {
-                        println!("    连接成功: {:?}", status);
-                        match mcp_manager.get_tools(name).await {
-                            Ok(tools) => {
-                                println!("    发现 {} 个工具", tools.len());
-                                for tool in &tools {
-                                    let tool_name = format!("mcp__{}__{}", name, tool.name);
-                                    let input_schema = serde_json::Value::Object((*tool.input_schema).clone());
-                                    available_tools.push(ToolDefinition::from_mcp(
-                                        &tool_name,
-                                        tool.description.as_deref(),
-                                        input_schema,
-                                    ));
-                                }
-                            }
-                            Err(e) => println!("    获取工具失败: {:?}", e),
-                        }
-                    }
-                    Err(e) => println!("    连接失败: {:?}", e),
-                }
-            }
-        }
-
-        // 无 MCP 时使用默认工具
-        if available_tools.is_empty() {
-            tracing::debug!("无可用 MCP 工具，使用默认工具列表");
-            available_tools = get_default_tools();
-        }
-
-
-        // 构建计划
-        let plan = build_baidu_search_plan();
-        assert_eq!(plan.steps.len(), 3);
-
-        // 创建执行器
-        println!("\n[STEP 4] 创建 PlanExecutor...");
-        let (events, callback) = create_event_collector();
-
-        let executor = PlanExecutor::new(Arc::new(McpToolExecutor::new(mcp_manager.clone())))
-            .with_llm_provider(Arc::new(llm_provider))
-            .with_model(model)
-            .with_available_tools(available_tools)
-            .with_event_callback(callback);
-
-        let abort_flag = Arc::new(AtomicBool::new(false));
-
-        // 执行计划
-        println!("[STEP 5] 执行探索性计划...");
-        let result = executor.execute_plan(plan, abort_flag).await.unwrap();
-
-        // 打印结果
-        println!("\n=== 执行结果 ===");
-        println!("完成步骤: {}/{}", result.completed_steps, result.total_steps);
-        println!("停止原因: {:?}", result.stop_reason);
-
-        for step_result in &result.step_results {
-            let output_preview = &step_result.output[..step_result.output.len().min(100)];
-            println!(
-                "  步骤 {}: {} - {}",
-                step_result.order,
-                if step_result.success { "成功" } else { "失败" },
-                output_preview
-            );
-        }
-
-        // 打印事件
-        let events = events.lock().unwrap();
-        println!("\n=== 事件序列 ===");
-        for event in &*events {
-            match event {
-                PlanStreamEvent::StepStart { step, tool, goal } => {
-                    println!("  StepStart: {} - tool='{}' goal='{}'", step, tool, goal);
-                }
-                PlanStreamEvent::StepComplete { step, success, .. } => {
-                    println!("  StepComplete: {} - success={}", step, success);
-                }
-                PlanStreamEvent::StepError { step, error, .. } => {
-                    println!("  StepError: {} - {}", step, error);
-                }
+        let mut has_plan_start = false;
+        let mut step_start_count = 0;
+        let mut step_complete_count = 0;
+        for ev in events.iter() {
+            match ev {
+                PlanStreamEvent::PlanStart { .. } => has_plan_start = true,
+                PlanStreamEvent::StepStart { .. } => step_start_count += 1,
+                PlanStreamEvent::StepComplete { .. } => step_complete_count += 1,
                 _ => {}
             }
         }
-
-        println!("[STEP 6] 完成");
+        assert!(has_plan_start, "应包含 PlanStart 事件");
+        assert!(
+            step_start_count >= 1,
+            "应至少有 1 个 StepStart 事件，实际: {}",
+            step_start_count
+        );
+        tracing::info!(
+            "事件统计: PlanStart={}, StepStart={}, StepComplete={}",
+            has_plan_start,
+            step_start_count,
+            step_complete_count
+        );
     }
-
-    // 注: IntentAnalyzer 的单元测试已迁移到 `services::llm::analyze_test`,
-    //     本文件只保留 PlanExecutor 相关的真实 LLM 集成测试。
 }
