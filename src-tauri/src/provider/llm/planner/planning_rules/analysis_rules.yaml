@@ -1,0 +1,17 @@
+domain: analysis
+
+planning:
+  input_is_context: true
+  output_must_be_structured: true
+  single_step_preferred: true
+
+constraints:
+  no_external_tool_required: true
+  reasoning_from_context: true
+  retry_on_failure: 1
+  timeout_seconds: 60
+
+output:
+  format: structured
+  include_reasoning_chain: true
+  include_confidence: true

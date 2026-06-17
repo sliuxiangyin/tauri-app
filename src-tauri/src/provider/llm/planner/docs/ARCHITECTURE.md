@@ -67,10 +67,12 @@ Stage
 Domain Router（程序）
    │ 根据 Stage.domain 加载对应 Planning Rules
    │
-   ├── browser → Browser Planning Rules
-   ├── file    → File Planning Rules
-   ├── adb     → ADB Planning Rules
-   ├── office  → Office Planning Rules
+   ├── browser  → Browser Planning Rules
+   ├── file     → File Planning Rules
+   ├── http     → HTTP Planning Rules
+   ├── adb      → ADB Planning Rules
+   ├── analysis → Analysis Planning Rules
+   ├── office   → Office Planning Rules
    └── ...
    │
    ▼
@@ -346,6 +348,8 @@ React Agent 是执行层级的最底层，负责：
 
 React Agent 的一个 Execution Step 可能对应多次 Tool Call，这是正常的——它自己决定需要多少次工具调用才能完成当前 Step。
 
+**特殊情况**：当 `expected_tool_category` 为 `llm_reasoning` 时（Analysis 领域），React Agent 不调用外部工具，直接基于上下文推理输出结果（详见第九节 Analysis Planning Rules）。
+
 ---
 
 # 七、Domain Strategy（领域策略）
@@ -359,10 +363,11 @@ Execution Planner 本身只有一套框架。
 ```
 Browser      → Browser Planning Rules
 File         → File Planning Rules
+HTTP         → HTTP Planning Rules
 ADB          → ADB Planning Rules
+Analysis     → Analysis Planning Rules
 Office       → Office Planning Rules
 Database     → Database Planning Rules
-HTTP         → HTTP Planning Rules
 Terminal     → Terminal Planning Rules
 ```
 
@@ -422,6 +427,36 @@ JSON 文件需要解析。
 页面未知时先截图。
 点击前定位控件。
 页面跳转后等待稳定。
+```
+
+---
+
+## Analysis Planning Rules
+
+```
+输入数据即为上下文，无需外部工具获取。
+优先单步完成（single_step_preferred）。
+输出必须为结构化数据。
+基于上下文推理，不依赖外部系统。
+```
+
+### llm_reasoning 工具类别
+
+Analysis 领域的 Execution Step 使用 `llm_reasoning` 作为 `expected_tool_category`。React Agent 遇到此类别时，**不调用外部工具**，而是直接基于当前会话上下文进行推理并输出结构化结果。
+
+这意味着 Analysis 领域的 React Agent 执行循环退化为：
+
+```
+接收 Execution Step
+        │
+        ▼
+  Thought（分析输入数据）
+        │
+        ▼
+  直接推理输出（无 Tool Call）
+        │
+        ▼
+  Step 完成 → 返回结构化结果
 ```
 
 ---
@@ -530,7 +565,7 @@ interface TaskStage {
   id: string                    // 阶段唯一标识
   goal: string                  // 阶段目标（业务语义）
   expected_output: string       // 期望产出描述
-  domain: string                // 所属领域（browser | file | adb | office | database | http | terminal）
+  domain: string                // 所属领域（browser | file | http | adb | analysis | office | database | terminal）
   depends_on: string[]          // 依赖的前置 Stage ID 列表（DAG）
 }
 ```
@@ -605,9 +640,10 @@ adb.tap             → { x: 100, y: 200 }
 
 新增领域（如 Bluetooth、Camera）时：
 
-1. 新增一个 Domain Planning Rules 文件（如 `bluetooth_rules.md`）
+1. 新增一个 Domain Planning Rules 文件（如 `bluetooth_rules.yaml`）
 2. 在 Domain Router 注册表中添加映射：`"bluetooth" → BluetoothRules`
 3. 将 bluetooth 加入 Task Planner 的 available domains 列表
+4. 若为纯 LLM 分析领域（无需外部工具），React Agent 使用 `llm_reasoning` 工具类别处理
 
 无需修改 Task Planner、Execution Planner、React Agent 的核心逻辑。架构天然支持水平扩展。
 

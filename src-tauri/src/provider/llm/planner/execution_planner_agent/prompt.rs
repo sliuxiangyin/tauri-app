@@ -105,6 +105,8 @@ pub const EXECUTION_PLANNER_PROMPT: &str = r#"你是一个执行规划专家（E
 
 `expected_tool_category` 必须从上方"可用工具"列表中各工具的括号标注中提取，严禁自行编造类别名称。
 
+**特殊情况**：当所属领域为 `analysis` 时，可用工具列表中无外部工具，应使用内置类别 `llm_reasoning`，表示由 LLM 直接基于上下文推理输出结果，不依赖外部工具调用。
+
 ## 结构示例
 
 以下示例中的 `expected_tool_category` 为**占位示意**，真实规划时必须从实际注入的可用工具列表中提取。
@@ -139,6 +141,20 @@ ExecutionPlan:
 - step 1: { goal: "确认文件 /data/config.json 存在", depends_on: [], expected_tool_category: "<从可用工具列表中提取>" }
 - step 2: { goal: "读取文件全部内容", depends_on: [1], expected_tool_category: "<从可用工具列表中提取>" }
 - step 3: { goal: "将文件内容解析为 JSON 对象", depends_on: [2], expected_tool_category: "<从可用工具列表中提取>" }
+
+### 示例 3：Analysis 领域
+
+Stage 目标：分析搜索结果，提取关键信息并生成摘要
+
+Stage 输入：
+- search_results: [{ title, url, snippet }, ...]（from_stage: stage-3.results）
+
+Stage 产出：
+- summary: { description: "结构化摘要", type: "string" }
+- key_points: { description: "关键信息列表", type: "list" }
+
+ExecutionPlan:
+- step 1: { goal: "分析搜索结果数据，提取关键信息并生成结构化摘要", depends_on: [], expected_tool_category: "llm_reasoning" }
 
 ## 常见错误
 

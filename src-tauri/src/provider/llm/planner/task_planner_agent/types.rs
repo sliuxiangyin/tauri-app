@@ -24,7 +24,7 @@ pub struct TaskStage {
     /// 阶段目标（业务语义）
     pub goal: String,
     /// 所属领域
-    /// （browser | file | adb | office | database | http | terminal）
+    /// （browser | file | http | adb | analysis | office | database | terminal）
     pub domain: String,
     /// 依赖的前置 Stage ID 列表（DAG）
     #[serde(default)]

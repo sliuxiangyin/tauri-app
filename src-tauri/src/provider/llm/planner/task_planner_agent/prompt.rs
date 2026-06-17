@@ -45,7 +45,7 @@ pub const TASK_PLANNER_PROMPT: &str = r#"你是一个任务规划专家（Task P
     {
       "id": "stage-1",
       "goal": "阶段目标（业务语义）",
-      "domain": "browser | file | adb | office | database | http | terminal",
+      "domain": "browser | file | http | adb | analysis | office | database | terminal",
       "depends_on": [],
       "outputs": {
         "output_name": {
@@ -85,6 +85,8 @@ pub const TASK_PLANNER_PROMPT: &str = r#"你是一个任务规划专家（Task P
 
 以下示例中的 domain、goal、outputs 具体值均为**占位示意**，真实规划时必须根据用户请求与可用领域列表推导，严禁直接复用。
 
+### 工具执行型（Browser / File / HTTP / ADB 等领域）
+
 用户请求：执行一个包含多个阶段的操作（以下为结构示意）
 
 TaskPlan:
@@ -97,6 +99,17 @@ TaskPlan:
 - stage-3: { goal: "提取最终信息", domain: "<从可用领域中选择>", depends_on: ["stage-2"],
     outputs: { "final": { "description": "最终产出", "type": "list" } },
     inputs: { "processed": { "description": "引用处理结果", "type": "object", "source": { "kind": "from_stage", "stage_id": "stage-2", "output_name": "processed" } } } }
+
+### LLM 分析型（analysis 领域）
+
+用户请求：分析上述搜索结果，提取关键信息并生成摘要
+
+TaskPlan:
+- stage-1: { goal: "分析数据并生成结构化摘要（示意）", domain: "analysis", depends_on: [],
+    outputs: { "summary": { "description": "分析摘要", "type": "string" } },
+    inputs: { "data": { "description": "待分析的数据", "type": "list", "source": { "kind": "from_stage", "stage_id": "<前序 stage>", "output_name": "<对应输出名>" } } } }
+
+**analysis 领域特点**：不需要外部工具（浏览器、文件系统等），由 LLM 直接基于输入数据进行推理分析，输出结构化结果。
 
 ## 常见错误
 

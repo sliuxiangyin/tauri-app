@@ -26,9 +26,10 @@ pub struct ExecutionStep {
     /// 无依赖的 Step 可并行执行，`depends_on` 为空数组。
     #[serde(default)]
     pub depends_on: Vec<u32>,
-    /// 预期使用的工具类别（如 `browser_interaction`、`fs_read`）
+    /// 预期使用的工具类别（如 `browser_interaction`、`fs_read`、`llm_reasoning`）
     ///
     /// 填写工具类别而非具体工具名，具体工具由 React Agent 选择。
+    /// `analysis` 领域使用内置类别 `llm_reasoning`（无需外部工具，LLM 直接推理输出）。
     pub expected_tool_category: String,
 }
 
