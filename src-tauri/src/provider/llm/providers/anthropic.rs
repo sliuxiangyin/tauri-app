@@ -190,7 +190,7 @@ impl LlmProvider for AnthropicProvider {
                 }
                 match timeout(Duration::from_millis(200), bytes_stream.next()).await {
                     Ok(Some(chunk)) => {
-                        let chunk = chunk.map_err(LlmError::Http)?;
+                        let chunk = chunk.map_err(|e| LlmError::Http(e.to_string()))?;
                         buf.push_str(&String::from_utf8_lossy(&chunk));
                         loop {
                             let idx = match buf.find('\n') {

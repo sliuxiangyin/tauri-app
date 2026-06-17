@@ -1,0 +1,21 @@
+domain: http
+
+planning:
+  verify_url_format: true
+  set_headers_before_request: true
+  parse_response_body: true
+  handle_redirect: true
+
+constraints:
+  require_valid_url: true
+  default_timeout_seconds: 30
+  retry_on_failure: 3
+  retry_on_status_codes: [429, 500, 502, 503, 504]
+  max_redirects: 5
+  max_response_size_mb: 50
+
+output:
+  format: structured
+  include_status_code: true
+  include_headers: true
+  include_response_body: true

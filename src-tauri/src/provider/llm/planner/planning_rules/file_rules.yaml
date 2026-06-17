@@ -1,0 +1,19 @@
+domain: file
+
+planning:
+  verify_existence_before_read: true
+  verify_directory_before_write: true
+  parse_after_read: true
+  confirm_after_write: true
+
+constraints:
+  require_absolute_path: true
+  check_file_size_limit_mb: 100
+  retry_on_failure: 2
+  timeout_seconds: 15
+
+output:
+  format: structured
+  include_file_path: true
+  include_file_size: true
+  include_encoding: true

@@ -276,7 +276,7 @@ fn convert_error(e: async_openai::error::OpenAIError) -> LlmError {
             body: api_err.to_string(),
         },
         async_openai::error::OpenAIError::JSONDeserialize(json_err, _body) => {
-            LlmError::Json(json_err)
+            LlmError::Json(json_err.to_string())
         }
         other => LlmError::Config(other.to_string()),
     }

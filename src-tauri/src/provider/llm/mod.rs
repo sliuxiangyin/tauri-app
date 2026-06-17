@@ -27,6 +27,7 @@ pub mod error;
 pub mod llm_event;
 pub mod llm_tool_trait;
 pub mod ordinary;
+pub mod planner;
 pub mod prompts;
 pub mod providers;
 pub mod tools;
@@ -49,6 +50,8 @@ pub use llm_tool_trait::{ToolExecutor, ToolExecError, FnToolExecutor};
 #[allow(unused_imports)]
 pub use ordinary::{process_tool_batch, ProcessResult, ToolExecContext, parse_tool_arguments};
 pub use providers::LlmProvider;
+#[allow(unused_imports)]
+pub use planner::task_planner_agent::agent::TaskPlannerAgent;
 #[allow(unused_imports)]
 pub use tools::{build_mcp_tool_name, parse_mcp_tool_name};
 #[allow(unused_imports)]

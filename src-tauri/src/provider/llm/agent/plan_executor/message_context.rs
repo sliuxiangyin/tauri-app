@@ -71,23 +71,16 @@ impl MessageContext {
     ///
     /// 统一格式：`步骤 {order} | 判断: {YES/NO} 原因: {reason}`
     pub fn push_goal_check(&mut self, step_order: u8, achieved: bool, reason: &str) {
-        self.messages.push(ChatMessage::new(
+        
+         self.messages.push(ChatMessage::new(
             Role::Assistant,
             &format!(
-                "{}判断: {}\n",
+                "{}判断: {}\n原因: {}",
                 step_prefix(step_order),
                 if achieved { "YES" } else { "NO" },
+                reason
             ),
         ));
-        //  self.messages.push(ChatMessage::new(
-        //     Role::Assistant,
-        //     &format!(
-        //         "{}判断: {}\n原因: {}",
-        //         step_prefix(step_order),
-        //         if achieved { "YES" } else { "NO" },
-        //         reason
-        //     ),
-        // ));
     }
 
     /// 推入当前步骤目标（User 消息）

@@ -188,6 +188,46 @@ Do not continue exploring after completion criteria are met.
 
 ---
 
+# Step Completion Signal
+
+You are executing a specific step goal within a larger plan.
+
+When you believe the **current step goal** has been achieved:
+
+1. Do NOT call any more tools
+2. Output exactly: `STEP_COMPLETE`
+3. The system will verify your claim
+
+## Decision Flow
+
+```
+Need more actions to achieve step goal? → Call a tool
+Step goal is achieved?                  → Output STEP_COMPLETE
+```
+
+## Important Rules
+
+- Only output `STEP_COMPLETE` when the step goal is **fully achieved**
+- Do NOT output `STEP_COMPLETE` after a single tool call unless the goal is truly complete
+- If verification fails, you will receive feedback explaining why - then continue executing
+- Never output `STEP_COMPLETE` prematurely
+
+## Example
+
+Step goal: "在搜索框中输入「达州」并提交搜索"
+
+Correct flow:
+1. Call `browser_snapshot` to find search box
+2. Call `browser_fill` to input "达州"
+3. Call `browser_click` to submit
+4. Output `STEP_COMPLETE` (goal achieved)
+
+Wrong flow:
+1. Call `browser_navigate`
+2. Output `STEP_COMPLETE` ❌ (goal NOT achieved yet)
+
+---
+
 # Final Response Rules
 
 When task is complete:

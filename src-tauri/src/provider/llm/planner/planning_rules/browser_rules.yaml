@@ -1,0 +1,20 @@
+domain: browser
+
+planning:
+  navigation_first: true
+  prefer_direct_url: true
+  verify_before_next_step: true
+  preserve_page_context: true
+
+constraints:
+  wait_after_navigation: true
+  require_visible_before_click: true
+  require_editable_before_input: true
+  retry_on_failure: 3
+  timeout_seconds: 30
+
+output:
+  format: structured
+  preserve_dom_order: true
+  include_source_url: true
+  include_metadata: true

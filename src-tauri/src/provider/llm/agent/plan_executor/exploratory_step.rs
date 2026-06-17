@@ -26,6 +26,19 @@ use crate::provider::llm::prompts::{
 use crate::provider::llm::providers::LlmProvider;
 use crate::provider::llm::types::{ChatMessage, ChatRequest, FunctionCall, PlanStep, Role, SubAction, ToolDefinition};
 
+/// LLM 决策结果枚举
+///
+/// 表示 LLM 在 Agent 循环中的决策类型：
+/// - `ToolCall`: LLM 认为需要继续执行工具
+/// - `StepComplete`: LLM 认为步骤目标已达成
+#[derive(Debug)]
+pub(crate) enum LlmDecision {
+    /// 执行工具调用（可能多个）
+    ToolCall(Vec<FunctionCall>),
+    /// 步骤完成信号，携带 LLM 的响应文本
+    StepComplete(String),
+}
+
 /// 执行探索性步骤（Agent 循环模式）
 ///
 /// 探索性步骤是一个完整的 Agent 循环：
@@ -84,11 +97,6 @@ pub(crate) async fn execute_exploratory_step(
     let mut all_outputs: Vec<String> = Vec::new();
 
     // Agent 循环
-    // 记录最近一次工具调用签名，用于检测重复
-    let mut last_tool_signature: Option<String> = None;
-    let mut consecutive_dup_count: u8 = 0;
-    const MAX_CONSECUTIVE_DUPS: u8 = 2;
-
     for call_count in 0..max_calls {
         // 检查中止标志
         if abort_flag.load(Ordering::SeqCst) {
@@ -102,8 +110,8 @@ pub(crate) async fn execute_exploratory_step(
             step.step_goal
         );
 
-        // 1. LLM 决策下一步工具（可能返回多个）
-        let tool_calls = llm_decide_next_tools(
+        // 1. LLM 决策：工具调用 OR 步骤完成信号
+        let decision = llm_decide_next_tool(
             llm,
             msg_ctx.messages(),
             available_tools,
@@ -112,116 +120,103 @@ pub(crate) async fn execute_exploratory_step(
         )
         .await?;
 
-        // 2. 依次执行所有工具调用
-        let mut batch_outputs: Vec<String> = Vec::new();
-        let mut batch_signatures: Vec<String> = Vec::new();
+        match decision {
+            LlmDecision::ToolCall(tool_calls) => {
+                // 2a. 依次执行所有工具调用
+                for tool_call in tool_calls {
+                    if abort_flag.load(Ordering::SeqCst) {
+                        return Err(PlanError::Aborted);
+                    }
 
-        for tool_call in tool_calls {
-            // 中止检查
-            if abort_flag.load(Ordering::SeqCst) {
-                return Err(PlanError::Aborted);
+                    let (tool_name, params, result) = llm_execute_tool(
+                        tool_executor.clone(),
+                        tool_call,
+                    )
+                    .await?;
+
+                    tracing::info!(
+                        "[Exploratory] Tool executed: {} -> {}",
+                        tool_name,
+                        result.chars().take(50).collect::<String>()
+                    );
+
+                    // 记录工具调用并添加到消息历史
+                    tool_calls_history.push((tool_name.clone(), params, result.clone()));
+                    all_outputs.push(format!("[{}] {}", tool_name, result));
+                    msg_ctx.push_tool_result(step.order, &tool_name, &result);
+                }
+                // 继续循环，让 LLM 决定下一步
             }
 
-            let (tool_name, params, result) = llm_execute_tool(
-                tool_executor.clone(),
-                tool_call,
-            )
-            .await?;
-
-            tracing::info!(
-                "[Exploratory] Tool executed: {} -> {}",
-                tool_name,
-                result.chars().take(50).collect::<String>()
-            );
-
-            // 记录签名用于重复检测
-            batch_signatures.push(format!("{}:{:?}", tool_name, params));
-
-            // 记录工具调用并添加到消息历史
-            tool_calls_history.push((tool_name.clone(), params, result.clone()));
-            all_outputs.push(format!("[{}] {}", tool_name, result));
-            batch_outputs.push(format!("[{}] {}", tool_name, result));
-            msg_ctx.push_tool_result(step.order, &tool_name, &result);
-        }
-
-        // 重复检测：如果本批次所有工具调用与上一次完全相同，累计重复计数
-        let current_signature = batch_signatures.join("|");
-        if last_tool_signature.as_deref() == Some(&current_signature) {
-            consecutive_dup_count += 1;
-            tracing::warn!(
-                "[Exploratory] Duplicate tool calls detected ({}x): {}",
-                consecutive_dup_count,
-                current_signature
-            );
-            if consecutive_dup_count >= MAX_CONSECUTIVE_DUPS {
-                tracing::warn!(
-                    "[Exploratory] Breaking loop: {} consecutive duplicate tool calls",
-                    consecutive_dup_count
+            LlmDecision::StepComplete(llm_reason) => {
+                // 2b. LLM 认为步骤完成，进行验证
+                tracing::info!(
+                    "[Exploratory] LLM signaled STEP_COMPLETE, verifying: {}",
+                    llm_reason.chars().take(100).collect::<String>()
                 );
-                break;
+
+                // 构建 (name, output) 视图传给 goal check
+                let goal_check_history: Vec<(String, String)> = tool_calls_history
+                    .iter()
+                    .map(|(name, _, output)| (name.clone(), output.clone()))
+                    .collect();
+
+                let (achieved, reason) = llm_check_goal(
+                    llm,
+                    &step.step_goal,
+                    &goal_check_history,
+                    model,
+                    abort_flag.clone(),
+                )
+                .await?;
+
+                tracing::debug!(
+                    "[Exploratory] Goal check after STEP_COMPLETE: achieved={}, reason={}",
+                    achieved,
+                    reason
+                );
+
+                if achieved {
+                    // 验证通过，步骤成功完成
+                    tracing::info!(
+                        "[Exploratory] Step completed successfully after {} calls",
+                        call_count + 1
+                    );
+
+                    // 构建 SubAction 列表
+                    let mut actions = Vec::new();
+                    for (idx, (name, params, result)) in tool_calls_history.iter().enumerate() {
+                        actions.push(SubAction {
+                            order: (idx + 1) as u8,
+                            tool_name: name.clone(),
+                            parameters: params.clone(),
+                            output: Some(result.clone()),
+                        });
+                    }
+
+                    return Ok(StepExecResult {
+                        step: PlanStep {
+                            order: step.order,
+                            step_type: step.step_type,
+                            step_goal: step.step_goal.clone(),
+                            expected_output: step.expected_output.clone(),
+                            depends_on: step.depends_on.clone(),
+                            input: step.input.clone(),
+                            success_criteria: step.success_criteria.clone(),
+                            actions,
+                        },
+                        duration_ms: start_time.elapsed().as_millis() as u64,
+                    });
+                } else {
+                    // 验证失败，告知 LLM 原因，继续执行
+                    tracing::warn!(
+                        "[Exploratory] STEP_COMPLETE verification failed: {}",
+                        reason
+                    );
+                    msg_ctx.push_goal_check(step.order, false, &reason);
+                    // 继续循环，LLM 会收到失败反馈并继续执行
+                }
             }
-            // 在重复时注入提示，帮助 LLM 换策略
-            msg_ctx.push_goal_check(step.order, false, "你连续使用了相同的工具调用，请换一种策略，尝试不同的工具或参数来达成目标");
-        } else {
-            consecutive_dup_count = 0;
-        }
-        last_tool_signature = Some(current_signature);
-
-        // 3. LLM 判断是否达成目标
-        // 构建 (name, output) 视图传给 goal check，避免暴露参数细节
-        let goal_check_history: Vec<(String, String)> = tool_calls_history
-            .iter()
-            .map(|(name, _, output)| (name.clone(), output.clone()))
-            .collect();
-        let (achieved, reason) = llm_check_goal(
-            llm,
-            &step.step_goal,
-            &goal_check_history,
-            model,
-            abort_flag.clone(),
-        )
-        .await?;
-
-        tracing::debug!(
-            "[Exploratory] Goal check: achieved={}, reason={}",
-            achieved,
-            reason
-        );
-
-        // 添加判断结果到消息历史（让 LLM 在下一轮知道判断结论）
-        msg_ctx.push_goal_check(step.order, achieved, &reason);
-
-        // 如果目标达成，返回结果
-        if achieved {
-            tracing::info!(
-                "[Exploratory] Step completed successfully after {} calls",
-                call_count + 1
-            );
-
-            // 构建 SubAction 列表（记录所有工具调用，含完整参数）
-            let mut actions = Vec::new();
-            for (idx, (name, params, result)) in tool_calls_history.iter().enumerate() {
-                actions.push(SubAction {
-                    order: (idx + 1) as u8,
-                    tool_name: name.clone(),
-                    parameters: params.clone(),
-                    output: Some(result.clone()),
-                });
-            }
-
-            return Ok(StepExecResult {
-                step: PlanStep {
-                    order: step.order,
-                    step_type: step.step_type,
-                    step_goal: step.step_goal.clone(),
-                    expected_output: step.expected_output.clone(),
-                    depends_on: step.depends_on.clone(),
-                    input: step.input.clone(),
-                    success_criteria: step.success_criteria.clone(),
-                    actions,
-                },
-                duration_ms: start_time.elapsed().as_millis() as u64,
-            });
         }
     }
 
@@ -246,13 +241,17 @@ pub(crate) async fn execute_exploratory_step(
 }
 
 /// LLM 决策下一步工具
+///
+/// 返回 LLM 的决策结果：
+/// - `LlmDecision::ToolCall`: 需要执行工具调用
+/// - `LlmDecision::StepComplete`: LLM 认为步骤目标已达成
 async fn llm_decide_next_tool(
     llm: &Arc<dyn LlmProvider>,
     messages: &[ChatMessage],
     available_tools: &[ToolDefinition],
     model: &str,
     abort_flag: Arc<AtomicBool>,
-) -> Result<FunctionCall, PlanError> {
+) -> Result<LlmDecision, PlanError> {
     let req = ChatRequest {
         messages: messages.to_vec(),
         model: model.to_string(),
@@ -281,21 +280,45 @@ async fn llm_decide_next_tool(
         message: format!("process_tool_batch error: {}", e),
     }))?;
 
-    // 解析工具调用
-    if let Some(call) = result.tool_calls.first() {
-        Ok(FunctionCall {
-            id: format!("exploratory_{}", std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis()),
-            name: call.name.clone(),
-            arguments: call.arguments.clone(),
-        })
-    } else {
+    // 检查 LLM 是否输出了 STEP_COMPLETE 信号
+    if result.text.contains("STEP_COMPLETE") {
+        tracing::info!(
+            "[Exploratory] LLM signaled STEP_COMPLETE: {}",
+            result.text.chars().take(100).collect::<String>()
+        );
+        return Ok(LlmDecision::StepComplete(result.text));
+    }
+
+    // 打印所有 LLM 返回的工具调用，用于调试
+    tracing::info!(
+        "[Exploratory] LLM returned {} tool call(s): {:?}",
+        result.tool_calls.len(),
+        result.tool_calls.iter().map(|c| &c.name).collect::<Vec<_>>()
+    );
+
+    // 解析所有工具调用
+    if result.tool_calls.is_empty() {
         Err(PlanError::ToolError(ToolExecError {
             name: "exploratory".to_string(),
-            message: format!("No tool call from LLM: {}", result.text),
+            message: format!("No tool call and no STEP_COMPLETE from LLM: {}", result.text),
         }))
+    } else {
+        let calls = result
+            .tool_calls
+            .into_iter()
+            .map(|call| FunctionCall {
+                id: format!(
+                    "exploratory_{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis()
+                ),
+                name: call.name,
+                arguments: call.arguments,
+            })
+            .collect();
+        Ok(LlmDecision::ToolCall(calls))
     }
 }
 

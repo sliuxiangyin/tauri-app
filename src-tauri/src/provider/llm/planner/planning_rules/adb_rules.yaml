@@ -1,0 +1,21 @@
+domain: adb
+
+planning:
+  verify_device_online: true
+  confirm_current_activity: true
+  screenshot_before_unknown: true
+  wait_after_page_transition: true
+
+constraints:
+  require_device_connection: true
+  locate_element_before_tap: true
+  wait_after_navigation: true
+  retry_on_failure: 3
+  timeout_seconds: 30
+  screenshot_on_failure: true
+
+output:
+  format: structured
+  include_screenshot_path: true
+  include_activity_name: true
+  include_device_serial: true

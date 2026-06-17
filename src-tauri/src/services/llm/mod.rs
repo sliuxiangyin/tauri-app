@@ -6,3 +6,5 @@ mod analyze_test;
 mod plan_executor_test;
 #[cfg(test)]
 mod plans_test;
+#[cfg(test)]
+mod task_planner_agent_test;

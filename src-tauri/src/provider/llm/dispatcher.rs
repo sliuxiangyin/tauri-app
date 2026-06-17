@@ -39,7 +39,7 @@ impl TryFrom<ProviderConfigPayload> for Provider {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(300))
             .build()
-            .map_err(LlmError::Http)?;
+            .map_err(|e| LlmError::Http(e.to_string()))?;
 
         Ok(match value {
             ProviderConfigPayload::OpenAiCompatible { base_url, api_key } => {
