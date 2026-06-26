@@ -6,14 +6,15 @@
 //! Execution Plan 是单个 Task Stage 的执行细化：
 //! - 每个 Step 描述一个可被 React Agent 执行的原子操作
 //! - Step 之间通过 `depends_on` 形成 DAG（支持并行执行）
-//! - `expected_tool_category` 指向工具类别，而非具体工具名
+//! - `expected_tool` 为建议工具名（React Agent 可按需选择其他工具）
 
 use serde::{Deserialize, Serialize};
 
 /// Execution Step：完成一个 Stage 所需的执行步骤。
 ///
-/// 面向执行（细粒度），包含依赖关系，可映射到工具类别。
-/// 具体工具选择和参数构造留给 React Agent。
+/// 面向执行（细粒度），包含依赖关系。
+/// `expected_tool` 为首选建议工具，React Agent 在执行时可优先尝试该工具，
+/// 若失败则可从完整工具列表中选择其他相关工具重试。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ExecutionStep {
@@ -26,11 +27,12 @@ pub struct ExecutionStep {
     /// 无依赖的 Step 可并行执行，`depends_on` 为空数组。
     #[serde(default)]
     pub depends_on: Vec<u32>,
-    /// 预期使用的工具类别（如 `browser_interaction`、`fs_read`、`llm_reasoning`）
+    /// 建议使用的工具名（如 `mcp__browser__click`、`mcp__fs__read`）
     ///
-    /// 填写工具类别而非具体工具名，具体工具由 React Agent 选择。
-    /// `analysis` 领域使用内置类别 `llm_reasoning`（无需外部工具，LLM 直接推理输出）。
-    pub expected_tool_category: String,
+    /// 工具名称格式：`<类型>__<服务>__<操作>`。
+    /// React Agent 优先尝试该工具，若失败可从完整工具列表中选择其他工具。
+    /// `analysis` 领域使用内置值 `llm_reasoning`（无需外部工具，LLM 直接推理输出）。
+    pub expected_tool: String,
 }
 
 /// Execution Plan：一组 Execution Step 形成的 DAG。
@@ -53,13 +55,13 @@ mod tests {
             order: 1,
             goal: "定位搜索输入框".to_string(),
             depends_on: vec![],
-            expected_tool_category: "browser_interaction".to_string(),
+            expected_tool: "mcp__browser__snapshot".to_string(),
         };
 
         let json = serde_json::to_string(&step).expect("serialize ok");
         assert!(json.contains("\"order\":1"));
         assert!(json.contains("\"goal\":\"定位搜索输入框\""));
-        assert!(json.contains("\"expected_tool_category\":\"browser_interaction\""));
+        assert!(json.contains("\"expected_tool\":\"mcp__browser__snapshot\""));
     }
 
     #[test]
@@ -68,13 +70,13 @@ mod tests {
             "order": 2,
             "goal": "在搜索输入框中输入关键词",
             "depends_on": [1],
-            "expected_tool_category": "browser_input"
+            "expected_tool": "mcp__browser__fill"
         }"#;
 
         let step: ExecutionStep = serde_json::from_str(json).expect("deserialize ok");
         assert_eq!(step.order, 2);
         assert_eq!(step.depends_on, vec![1]);
-        assert_eq!(step.expected_tool_category, "browser_input");
+        assert_eq!(step.expected_tool, "mcp__browser__fill");
     }
 
     #[test]
@@ -82,7 +84,7 @@ mod tests {
         let json = r#"{
             "order": 1,
             "goal": "确认页面已加载",
-            "expected_tool_category": "browser_wait"
+            "expected_tool": "mcp__browser__wait_for"
         }"#;
 
         let step: ExecutionStep = serde_json::from_str(json).expect("deserialize ok");
@@ -97,19 +99,19 @@ mod tests {
                     order: 1,
                     goal: "确认页面已加载".to_string(),
                     depends_on: vec![],
-                    expected_tool_category: "browser_wait".to_string(),
+                    expected_tool: "mcp__browser__wait_for".to_string(),
                 },
                 ExecutionStep {
                     order: 2,
                     goal: "定位搜索输入框".to_string(),
                     depends_on: vec![1],
-                    expected_tool_category: "browser_interaction".to_string(),
+                    expected_tool: "mcp__browser__snapshot".to_string(),
                 },
                 ExecutionStep {
                     order: 3,
                     goal: "输入关键词".to_string(),
                     depends_on: vec![2],
-                    expected_tool_category: "browser_input".to_string(),
+                    expected_tool: "mcp__browser__fill".to_string(),
                 },
             ],
         };
@@ -129,19 +131,19 @@ mod tests {
                     "order": 1,
                     "goal": "确认文件存在",
                     "depends_on": [],
-                    "expected_tool_category": "fs_read"
+                    "expected_tool": "mcp__fs__exists"
                 },
                 {
                     "order": 2,
                     "goal": "读取文件内容",
                     "depends_on": [1],
-                    "expected_tool_category": "fs_read"
+                    "expected_tool": "mcp__fs__read"
                 },
                 {
                     "order": 3,
-                    "goal": "解析 JSON 对象",
+                    "goal": "分析数据并生成摘要",
                     "depends_on": [2],
-                    "expected_tool_category": "fs_parse"
+                    "expected_tool": "llm_reasoning"
                 }
             ]
         }"#;
@@ -150,6 +152,6 @@ mod tests {
         assert_eq!(plan.steps.len(), 3);
         assert_eq!(plan.steps[0].order, 1);
         assert!(plan.steps[0].depends_on.is_empty());
-        assert_eq!(plan.steps[2].expected_tool_category, "fs_parse");
+        assert_eq!(plan.steps[2].expected_tool, "llm_reasoning");
     }
 }

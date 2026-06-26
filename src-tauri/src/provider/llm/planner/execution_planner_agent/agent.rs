@@ -14,7 +14,8 @@
 //!     .with_planning_rules(rules)
 //!     .with_available_tools(tools_description)
 //!     .with_runtime_context("当前页面: https://www.baidu.com".into())
-//!     .with_previous_stage_outputs(previous_outputs_json);
+//!     .with_previous_stage_outputs(previous_outputs_json)
+//!     .with_previous_attempt_errors(previous_errors_json);  // 仅 Layer 2 replan 时需要
 //!
 //! // 非流式
 //! let plan = agent.run().await?;
@@ -29,7 +30,7 @@ use std::sync::Arc;
 use crate::provider::llm::error::LlmError;
 use crate::provider::llm::planner::agent_base::{run_llm, run_streaming_llm, StreamingResponse};
 use crate::provider::llm::providers::provider_trait::LlmProvider;
-use crate::provider::llm::types::{ChatMessage, Role};
+use crate::provider::llm::types::{ChatMessage, Role, ToolDefinition};
 
 use crate::provider::llm::planner::agent_base::{LlmAgent, LlmAgentBase};
 use super::prompt::EXECUTION_PLANNER_PROMPT;
@@ -56,6 +57,11 @@ pub struct ExecutionPlannerAgent {
     runtime_context: String,
     /// 前序 Stage 的实际输出值（注入到 prompt {{PREVIOUS_STAGE_OUTPUTS}}）
     previous_stage_outputs: String,
+    /// 上次尝试失败的步骤信息（注入到 prompt {{PREVIOUS_ATTEMPT_ERRORS}}）
+    ///
+    /// Layer 2 replan 时由 `TaskPipelineExecutor::execute_stage` 填充。
+    /// 第一次正常规划时为空字符串（提示词不展示此区块）。
+    previous_attempt_errors: String,
 }
 
 impl ExecutionPlannerAgent {
@@ -71,6 +77,7 @@ impl ExecutionPlannerAgent {
             available_tools: String::new(),
             runtime_context: String::new(),
             previous_stage_outputs: String::new(),
+            previous_attempt_errors: String::new(),
         }
     }
 
@@ -155,28 +162,33 @@ impl ExecutionPlannerAgent {
         }
     }
 
-    /// 根据 domain 从指定目录自动加载 Planning Rules
+    /// 根据 domain 加载编译时嵌入的 Planning Rules
     ///
-    /// 查找 `{rules_dir}/{domain}_rules.yaml` 文件，读取内容并注入到 prompt。
-    /// 若文件不存在，planning_rules 设为空字符串（不影响执行）。
+    /// 通过 `include_str!` 将 `{domain}_rules.yaml` 编译时嵌入二进制，
+    /// 无需运行时文件 I/O，打包后亦能正常工作。
+    ///
+    /// 支持领域：`browser` / `file` / `http` / `adb` / `analysis`。
+    /// 未匹配的领域将 warning 并设为空字符串（不影响执行）。
     ///
     /// # 示例
     ///
     /// ```ignore
     /// let agent = ExecutionPlannerAgent::new(provider)
     ///     .with_stage_domain("browser".into())
-    ///     .load_planning_rules("src-tauri/src/provider/llm/planner/planning_rules");
-    /// // 自动加载 browser_rules.yaml
+    ///     .load_planning_rules();
+    /// // 自动嵌入并加载 browser_rules.yaml
     /// ```
-    pub fn load_planning_rules(self, rules_dir: &str) -> Self {
-        let file_path = format!("{}/{}_rules.yaml", rules_dir, self.stage_domain);
-        let rules = match std::fs::read_to_string(&file_path) {
-            Ok(content) => content,
-            Err(_) => {
+    pub fn load_planning_rules(self) -> Self {
+        let rules = match self.stage_domain.as_str() {
+            "browser"  => include_str!("../planning_rules/browser_rules.yaml").to_string(),
+            "file"     => include_str!("../planning_rules/file_rules.yaml").to_string(),
+            "http"     => include_str!("../planning_rules/http_rules.yaml").to_string(),
+            "adb"      => include_str!("../planning_rules/adb_rules.yaml").to_string(),
+            "analysis" => include_str!("../planning_rules/analysis_rules.yaml").to_string(),
+            other => {
                 tracing::warn!(
-                    domain = %self.stage_domain,
-                    path = %file_path,
-                    "Planning rules file not found, proceeding without rules"
+                    domain = %other,
+                    "No embedded planning rules for domain, proceeding without rules"
                 );
                 String::new()
             }
@@ -188,14 +200,25 @@ impl ExecutionPlannerAgent {
         }
     }
 
-    /// 设置可用工具列表描述
+    /// 设置可用工具列表
     ///
     /// 将注入到 prompt 的 `{{AVAILABLE_TOOLS}}`。
-    /// 格式示例：`- browser.click (browser_interaction): 点击页面元素`
-    pub fn with_available_tools(self, tools: String) -> Self {
+    ///
+    /// 接受 `Vec<ToolDefinition>`，内部自动转为 prompt 所需的字符串格式：
+    /// `- <工具名>: <描述>`（每行一个工具）。
+    pub fn with_available_tools(self, tools: Vec<ToolDefinition>) -> Self {
+        let tools_str = tools
+            .iter()
+            .map(|t| {
+                let name = &t.function.name;
+                let desc = t.function.description.as_deref().unwrap_or("");
+                format!("- {}: {}", name, desc)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         Self {
             base: self.base,
-            available_tools: tools,
+            available_tools: tools_str,
             ..self
         }
     }
@@ -218,6 +241,35 @@ impl ExecutionPlannerAgent {
         Self {
             base: self.base,
             previous_stage_outputs: outputs,
+            ..self
+        }
+    }
+
+    /// 设置上次尝试失败的步骤信息（Layer 2 replan 注入）
+    ///
+    /// 将注入到 prompt 的 `{{PREVIOUS_ATTEMPT_ERRORS}}`。
+    ///
+    /// **使用场景**：当 Execution Planner 在 Stage 内 replan 时（attempt > 1），
+    /// `TaskPipelineExecutor::execute_stage` 会收集已失败的 Step 信息并通过此方法
+    /// 注入。LLM 据此可以：
+    /// - 识别上次失败的根因（selector 错误 / 时序问题 / 工具选择错误）
+    /// - 调整新 plan 避开相同的失败模式
+    /// - 在关键步骤后增加验证步骤
+    ///
+    /// 第一次正常规划时**不需要调用此方法**（默认为空字符串）。
+    ///
+    /// # 示例
+    ///
+    /// ```ignore
+    /// // Layer 2 replan 时
+    /// let ep_agent = ExecutionPlannerAgent::new(provider)
+    ///     // ... 其他 with_*
+    ///     .with_previous_attempt_errors(serde_json::to_string_pretty(&failed_steps)?);
+    /// ```
+    pub fn with_previous_attempt_errors(self, errors: String) -> Self {
+        Self {
+            base: self.base,
+            previous_attempt_errors: errors,
             ..self
         }
     }
@@ -274,8 +326,17 @@ impl LlmAgent for ExecutionPlannerAgent {
 }
 
 impl ExecutionPlannerAgent {
-    /// 替换 prompt 中的 8 个模板变量
+    /// 替换 prompt 中的 9 个模板变量
+    ///
+    /// 当 `previous_attempt_errors` 为空字符串时，注入占位说明，
+    /// 让 LLM 知道"无历史失败信息"，避免困惑于空区块。
     fn build_system_prompt(&self) -> String {
+        let errors_section = if self.previous_attempt_errors.trim().is_empty() {
+            "（首次规划，无历史失败记录。请按 Planning Rules 正常规划。）".to_string()
+        } else {
+            self.previous_attempt_errors.clone()
+        };
+
         EXECUTION_PLANNER_PROMPT
             .replace("{{STAGE_GOAL}}", &self.stage_goal)
             .replace("{{STAGE_DOMAIN}}", &self.stage_domain)
@@ -285,6 +346,7 @@ impl ExecutionPlannerAgent {
             .replace("{{AVAILABLE_TOOLS}}", &self.available_tools)
             .replace("{{RUNTIME_CONTEXT}}", &self.runtime_context)
             .replace("{{PREVIOUS_STAGE_OUTPUTS}}", &self.previous_stage_outputs)
+            .replace("{{PREVIOUS_ATTEMPT_ERRORS}}", &errors_section)
     }
 
     /// 从 LLM 响应中提取 JSON 子串

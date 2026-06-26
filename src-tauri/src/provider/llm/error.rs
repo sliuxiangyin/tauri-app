@@ -22,6 +22,9 @@ pub enum LlmError {
 
     #[error("parse error: {0}")]
     ParseError(String),
+
+    #[error("not implemented: {0}")]
+    NotImplemented(String),
 }
 
 // 自动转换
@@ -50,6 +53,7 @@ impl Clone for LlmError {
             LlmError::Config(s) => LlmError::Config(s.clone()),
             LlmError::Timeout => LlmError::Timeout,
             LlmError::ParseError(s) => LlmError::ParseError(s.clone()),
+            LlmError::NotImplemented(s) => LlmError::NotImplemented(s.clone()),
         }
     }
 }
